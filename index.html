@@ -1543,8 +1543,31 @@
 
     /* Layout: reclaim vertical space from the smaller header */
     .main { height: calc(100vh - 108px) !important; }
-    .sidebar { width: 160px !important; }
+    .sidebar { width: 200px !important; }
     .tab { font-size: 11px !important; padding: 6px 8px !important; }
+
+    /* Roster chips: compact controls so the name gets the space */
+    .player-chip { gap: 4px !important; padding: 3px 4px !important; }
+    .chip-number { width: 22px !important; font-size: 19px !important; }
+    .chip-name { font-size: 13px !important; }
+    .chip-playtime { font-size: 11px !important; }
+    .btn-edit-player, .btn-alarm-player, .btn-remove-player {
+      font-size: 11px !important; padding: 1px !important;
+    }
+
+    /* Subs & Minutes: fit 5 on-court cards in one row */
+    .subs-court-grid { grid-template-columns: repeat(5, 1fr) !important; gap: 8px !important; }
+    .subs-court-card { padding: 10px 6px 8px !important; border-radius: 12px !important; }
+    .subs-av-lg { width: 76px !important; height: 76px !important; }
+    .subs-av-lg .ph { font-size: 28px !important; }
+    .subs-av-lg .cam { width: 24px !important; height: 24px !important; font-size: 12px !important; }
+    .subs-av-lg .rm { width: 20px !important; height: 20px !important; font-size: 12px !important; }
+    .subs-cnum { font-size: 15px !important; margin-top: 4px !important; }
+    .subs-cname { font-size: 15px !important; }
+    .subs-ctime { font-size: 26px !important; }
+    .subs-cstint { font-size: 11px !important; }
+    .subs-cout { font-size: 10px !important; padding: 4px 9px !important; margin-top: 5px !important; }
+    .subs-bench-grid { grid-template-columns: repeat(auto-fill, minmax(120px,1fr)) !important; gap: 8px !important; }
 
     /* Cards: tighter type */
     .player-card { grid-template-rows: 48px 1fr 26px !important; }
