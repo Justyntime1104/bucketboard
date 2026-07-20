@@ -1525,24 +1525,24 @@
   /* ─── iPAD SCALE-DOWN (768px – 1194px) ─── */
   @media screen and (min-width: 768px) and (max-width: 1194px) {
     /* Header: compact */
-    header { padding: 8px 8px 2px !important; height: auto !important; }
-    .logo { height: auto !important; max-height: 84px !important; width: 84px !important; max-width: 84px !important; }
-    .logo img { height: 84px !important; width: auto !important; max-height: 84px !important; max-width: 84px !important; }
-    .wm-line1 { font-size: 20px !important; }
-    .wm-line2 { font-size: 42px !important; }
-    .opp-wordmark-line1 { font-size: 20px !important; }
-    .game-clock { font-size: 26px !important; letter-spacing: 2px !important; }
-    .score-team-val { font-size: 30px !important; }
-    .score-sep { font-size: 26px !important; }
-    .score-team-label { font-size: 11px !important; }
-    .btn-clock { font-size: 11px !important; padding: 5px 8px !important; }
-    .quarter-pip { width: 22px !important; height: 22px !important; font-size: 12px !important; }
-    .btn-gear { width: 36px !important; height: 36px !important; font-size: 18px !important; }
-    .btn-opp { width: 30px !important; height: 30px !important; font-size: 18px !important; }
-    .btn-opp-pts { padding: 3px 10px !important; font-size: 13px !important; }
+    header { padding: 6px 8px 2px !important; height: auto !important; }
+    .logo { height: auto !important; max-height: 68px !important; width: 68px !important; max-width: 68px !important; }
+    .logo img { height: 68px !important; width: auto !important; max-height: 68px !important; max-width: 68px !important; }
+    .wm-line1 { font-size: 17px !important; }
+    .wm-line2 { font-size: 34px !important; }
+    .opp-wordmark-line1 { font-size: 17px !important; }
+    .game-clock { font-size: 22px !important; letter-spacing: 2px !important; }
+    .score-team-val { font-size: 26px !important; }
+    .score-sep { font-size: 22px !important; }
+    .score-team-label { font-size: 10px !important; }
+    .btn-clock { font-size: 10px !important; padding: 4px 7px !important; }
+    .quarter-pip { width: 20px !important; height: 20px !important; font-size: 11px !important; }
+    .btn-gear { width: 32px !important; height: 32px !important; font-size: 16px !important; }
+    .btn-opp { width: 28px !important; height: 28px !important; font-size: 16px !important; }
+    .btn-opp-pts { padding: 2px 9px !important; font-size: 12px !important; }
 
     /* Layout: reclaim vertical space from the smaller header */
-    .main { height: calc(100vh - 108px) !important; }
+    .main { height: calc(100vh - 88px) !important; }
     .sidebar { width: 200px !important; }
     .tab { font-size: 11px !important; padding: 6px 8px !important; }
 
@@ -1555,19 +1555,33 @@
       font-size: 11px !important; padding: 1px !important;
     }
 
-    /* Subs & Minutes: fit 5 on-court cards in one row */
+    /* Subs & Minutes: fit 5 on-court cards + bench on one screen */
+    .subs-sec-label { font-size: 15px !important; margin: 2px 2px 6px !important; }
+    .subs-bench-head { margin: 10px 2px 6px !important; }
+    .subs-sort { font-size: 11px !important; padding: 5px 10px !important; }
     .subs-court-grid { grid-template-columns: repeat(5, 1fr) !important; gap: 8px !important; }
-    .subs-court-card { padding: 10px 6px 8px !important; border-radius: 12px !important; }
-    .subs-av-lg { width: 76px !important; height: 76px !important; }
-    .subs-av-lg .ph { font-size: 28px !important; }
-    .subs-av-lg .cam { width: 24px !important; height: 24px !important; font-size: 12px !important; }
-    .subs-av-lg .rm { width: 20px !important; height: 20px !important; font-size: 12px !important; }
-    .subs-cnum { font-size: 15px !important; margin-top: 4px !important; }
-    .subs-cname { font-size: 15px !important; }
-    .subs-ctime { font-size: 26px !important; }
-    .subs-cstint { font-size: 11px !important; }
-    .subs-cout { font-size: 10px !important; padding: 4px 9px !important; margin-top: 5px !important; }
-    .subs-bench-grid { grid-template-columns: repeat(auto-fill, minmax(120px,1fr)) !important; gap: 8px !important; }
+    .subs-court-card { padding: 8px 6px 6px !important; border-radius: 12px !important; gap: 3px !important; }
+    .subs-av-lg { width: 54px !important; height: 54px !important; }
+    .subs-av-lg .ph { font-size: 20px !important; }
+    .subs-av-lg .cam { width: 20px !important; height: 20px !important; font-size: 10px !important; }
+    .subs-av-lg .rm { width: 18px !important; height: 18px !important; font-size: 11px !important; }
+    .subs-cnum { font-size: 12px !important; margin-top: 2px !important; }
+    .subs-cname { font-size: 13px !important; }
+    .subs-ctime { font-size: 20px !important; }
+    .subs-cstint { font-size: 10px !important; }
+    .subs-cout { font-size: 9px !important; padding: 3px 8px !important; margin-top: 3px !important; }
+    .subs-card-tag { font-size: 9px !important; padding: 1px 6px !important; }
+    .subs-bench-grid { grid-template-columns: repeat(auto-fill, minmax(100px,1fr)) !important; gap: 8px !important; }
+    .subs-bench-card { padding: 8px 6px 6px !important; gap: 3px !important; }
+    .subs-av-md { width: 44px !important; height: 44px !important; }
+    .subs-av-md .ph { font-size: 17px !important; }
+    .subs-av-md .cam { width: 17px !important; height: 17px !important; font-size: 9px !important; }
+    .subs-av-md .rm { width: 16px !important; height: 16px !important; font-size: 10px !important; }
+    .subs-bname { font-size: 13px !important; }
+    .subs-bnum { font-size: 11px !important; }
+    .subs-btime { font-size: 14px !important; }
+    #tab-subs { padding-bottom: 12px !important; }
+    .court-panel { padding: 8px 10px !important; }
 
     /* Cards: tighter type */
     .player-card { grid-template-rows: 48px 1fr 26px !important; }
