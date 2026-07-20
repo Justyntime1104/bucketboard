@@ -1535,23 +1535,21 @@
   .wb-btn-clear { color: var(--muted); }
   .wb-btn-clear:hover { border-color: #e04545; color: #e04545; }
   .wb-court-wrap {
-    position: relative; max-width: 680px; margin: 0 auto;
+    position: relative; max-width: 920px; margin: 0 auto;
     touch-action: none; user-select: none; -webkit-user-select: none;
+    filter: drop-shadow(0 8px 28px rgba(0,0,0,0.45));
   }
-  .wb-court-wrap svg {
-    width: 100%; height: auto; display: block;
-    background: rgba(232,114,12,0.04);
-    border: 1px solid var(--border); border-radius: 12px;
-  }
-  .wb-line { stroke: var(--white); opacity: 0.45; }
+  .wb-court-wrap svg { width: 100%; height: auto; display: block; }
   .wb-token {
     position: absolute; width: 46px; height: 46px; margin: -23px 0 0 -23px;
     border-radius: 50%; background: var(--orange); color: #0f0d0d;
     font-family: 'Bebas Neue', sans-serif; font-size: 21px; letter-spacing: 0.5px;
     display: flex; align-items: center; justify-content: center;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.45); border: 2px solid rgba(255,255,255,0.75);
+    box-shadow: 0 3px 10px rgba(0,0,0,0.5); border: 2.5px solid rgba(255,255,255,0.85);
     cursor: grab; touch-action: none; z-index: 5;
+    background-size: cover; background-position: center;
   }
+  .wb-token.has-pic { color: transparent; border-color: var(--orange); background-color: #222; }
   .wb-token:active { cursor: grabbing; z-index: 6; }
   .wb-token.x { background: #e04545; color: #fff; }
   .wb-hint { color: var(--muted); font-size: 12px; text-align: center; margin-top: 10px; }
@@ -1914,23 +1912,66 @@
         <button class="wb-btn wb-btn-clear" onclick="wbClear()">Clear Board</button>
       </div>
       <div class="wb-court-wrap" id="wbCourt">
-        <svg viewBox="0 0 500 470" xmlns="http://www.w3.org/2000/svg">
+        <svg viewBox="0 0 1000 560" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+          <defs>
+            <linearGradient id="wbWood" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#c68e5e"/>
+              <stop offset="0.5" stop-color="#b97f4e"/>
+              <stop offset="1" stop-color="#ad7344"/>
+            </linearGradient>
+            <linearGradient id="wbWoodDark" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#9a6238"/>
+              <stop offset="1" stop-color="#8a5530"/>
+            </linearGradient>
+            <pattern id="wbPlanks" width="47" height="560" patternUnits="userSpaceOnUse">
+              <line x1="46.5" y1="0" x2="46.5" y2="560" stroke="rgba(60,30,5,0.14)" stroke-width="1.5"/>
+            </pattern>
+            <clipPath id="wbLogoClip"><circle cx="500" cy="280" r="53"/></clipPath>
+            <radialGradient id="wbVignette" cx="0.5" cy="0.5" r="0.75">
+              <stop offset="0.6" stop-color="rgba(0,0,0,0)"/>
+              <stop offset="1" stop-color="rgba(0,0,0,0.22)"/>
+            </radialGradient>
+          </defs>
+
+          <!-- floor: dark apron, lighter playing surface, plank seams -->
+          <rect x="0" y="0" width="1000" height="560" rx="14" fill="url(#wbWoodDark)"/>
+          <rect x="0" y="0" width="1000" height="560" rx="14" fill="url(#wbPlanks)"/>
+          <rect x="30" y="30" width="940" height="500" fill="url(#wbWood)"/>
+          <rect x="30" y="30" width="940" height="500" fill="url(#wbPlanks)"/>
+
+          <!-- painted keys (team color) -->
+          <rect x="30" y="200" width="190" height="160" fill="var(--orange)" fill-opacity="0.75"/>
+          <rect x="780" y="200" width="190" height="160" fill="var(--orange)" fill-opacity="0.75"/>
+
           <!-- boundary -->
-          <rect x="2" y="2" width="496" height="466" fill="none" class="wb-line" stroke-width="3"/>
-          <!-- half court line + center circle (top) -->
-          <path d="M 190 2 A 60 60 0 0 0 310 2" fill="none" class="wb-line" stroke-width="2"/>
-          <!-- key -->
-          <rect x="170" y="280" width="160" height="188" fill="rgba(232,114,12,0.07)" class="wb-line" stroke-width="2"/>
-          <!-- free throw circle -->
-          <path d="M 190 280 A 60 60 0 0 1 310 280" fill="none" class="wb-line" stroke-width="2"/>
-          <path d="M 190 280 A 60 60 0 0 0 310 280" fill="none" class="wb-line" stroke-width="2" stroke-dasharray="10 8"/>
-          <!-- backboard + hoop -->
-          <line x1="220" y1="432" x2="280" y2="432" class="wb-line" stroke-width="3"/>
-          <circle cx="250" cy="419" r="9" fill="none" stroke="var(--orange)" stroke-width="2.5"/>
-          <!-- restricted area -->
-          <path d="M 210 468 L 210 419 A 40 40 0 0 1 290 419 L 290 468" fill="none" class="wb-line" stroke-width="1.5"/>
-          <!-- 3pt line -->
-          <path d="M 30 468 L 30 330 A 237.5 237.5 0 0 1 470 330 L 470 468" fill="none" class="wb-line" stroke-width="2.5"/>
+          <rect x="30" y="30" width="940" height="500" fill="none" stroke="#f5efe6" stroke-width="4"/>
+
+          <!-- half-court line + center circle -->
+          <line x1="500" y1="30" x2="500" y2="530" stroke="#f5efe6" stroke-width="3"/>
+          <circle cx="500" cy="280" r="60" fill="none" stroke="#f5efe6" stroke-width="3"/>
+          <circle cx="500" cy="280" r="53" fill="rgba(255,255,255,0.10)"/>
+          <image id="wbCenterLogo" x="447" y="227" width="106" height="106" clip-path="url(#wbLogoClip)" preserveAspectRatio="xMidYMid meet" opacity="0.95"/>
+
+          <!-- LEFT: key lines, FT circle, backboard, hoop, restricted, 3pt -->
+          <rect x="30" y="200" width="190" height="160" fill="none" stroke="#f5efe6" stroke-width="3"/>
+          <path d="M 220 220 A 60 60 0 0 1 220 340" fill="none" stroke="#f5efe6" stroke-width="3"/>
+          <path d="M 220 220 A 60 60 0 0 0 220 340" fill="none" stroke="#f5efe6" stroke-width="2.5" stroke-dasharray="11 9"/>
+          <line x1="70" y1="250" x2="70" y2="310" stroke="#f5efe6" stroke-width="4"/>
+          <circle cx="82.5" cy="280" r="9.5" fill="none" stroke="#ff8c2e" stroke-width="3.5"/>
+          <path d="M 82.5 240 A 40 40 0 0 1 82.5 320" fill="none" stroke="#f5efe6" stroke-width="2"/>
+          <path d="M 30 60 L 170 60 A 237.5 237.5 0 0 1 170 500 L 30 500" fill="none" stroke="#f5efe6" stroke-width="3.5"/>
+
+          <!-- RIGHT: mirrored -->
+          <rect x="780" y="200" width="190" height="160" fill="none" stroke="#f5efe6" stroke-width="3"/>
+          <path d="M 780 220 A 60 60 0 0 0 780 340" fill="none" stroke="#f5efe6" stroke-width="3"/>
+          <path d="M 780 220 A 60 60 0 0 1 780 340" fill="none" stroke="#f5efe6" stroke-width="2.5" stroke-dasharray="11 9"/>
+          <line x1="930" y1="250" x2="930" y2="310" stroke="#f5efe6" stroke-width="4"/>
+          <circle cx="917.5" cy="280" r="9.5" fill="none" stroke="#ff8c2e" stroke-width="3.5"/>
+          <path d="M 917.5 240 A 40 40 0 0 0 917.5 320" fill="none" stroke="#f5efe6" stroke-width="2"/>
+          <path d="M 970 60 L 830 60 A 237.5 237.5 0 0 0 830 500 L 970 500" fill="none" stroke="#f5efe6" stroke-width="3.5"/>
+
+          <!-- soft lighting -->
+          <rect x="0" y="0" width="1000" height="560" rx="14" fill="url(#wbVignette)" pointer-events="none"/>
         </svg>
       </div>
       <p class="wb-hint">Drag tokens to position players. Double-tap a token to remove it.</p>
@@ -3878,6 +3919,7 @@
     if (name === 'stats') renderStatsTable();
     if (name === 'season') renderSeason();
     if (name === 'rotation') renderRotation();
+    if (name === 'whiteboard') wbSyncLogo();
     if (name === 'subs') renderSubs();
     else { var _scb = document.getElementById('subsCommitBar'); if (_scb) _scb.classList.remove('show'); }
   }
@@ -3885,13 +3927,23 @@
   // ─── WHITEBOARD ───
   let wbOCount = 0, wbXCount = 0;
 
-  const WB_SPOTS = [ [50,20], [22,42], [78,42], [30,78], [70,78] ]; // PG, wings, blocks (% of court)
+  const WB_SPOTS = [ [30,50], [22,20], [22,80], [11,34], [11,66] ]; // PG, wings, blocks (% of court, attacking left hoop)
 
-  function wbMakeToken(label, isX, xPct, yPct) {
+  function wbSyncLogo() {
+    const src = document.querySelector('.logo img').src;
+    const el = document.getElementById('wbCenterLogo');
+    if (el && src) {
+      el.setAttribute('href', src);
+      el.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', src);
+    }
+  }
+
+  function wbMakeToken(label, isX, xPct, yPct, pic) {
     const court = document.getElementById('wbCourt');
     const t = document.createElement('div');
-    t.className = 'wb-token' + (isX ? ' x' : '');
+    t.className = 'wb-token' + (isX ? ' x' : '') + (pic ? ' has-pic' : '');
     t.textContent = label;
+    if (pic) t.style.backgroundImage = "url('" + pic + "')";
     t.style.left = xPct + '%';
     t.style.top = yPct + '%';
     t.addEventListener('pointerdown', wbDragStart);
@@ -3936,18 +3988,18 @@
     if (!onCourt.length) { showAlarmToast('Add players to your roster first', 'var(--orange)'); return; }
     onCourt.slice(0, 5).forEach((p, i) => {
       const [x, y] = WB_SPOTS[i % WB_SPOTS.length];
-      wbMakeToken(p.number, false, x, y);
+      wbMakeToken(p.number, false, x, y, subsPics[subsKey(p)] || null);
     });
   }
 
   function wbAddO() {
     wbOCount++;
-    wbMakeToken('O' + wbOCount, false, 50, 50);
+    wbMakeToken('O' + wbOCount, false, 45, 50);
   }
 
   function wbAddX() {
     wbXCount++;
-    wbMakeToken('X' + wbXCount, true, 50, 60);
+    wbMakeToken('X' + wbXCount, true, 55, 50);
   }
 
   function wbClear() {
