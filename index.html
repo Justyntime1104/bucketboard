@@ -1534,6 +1534,21 @@
   .wb-btn-x:hover { border-color: #e04545; color: #e04545; }
   .wb-btn-clear { color: var(--muted); }
   .wb-btn-clear:hover { border-color: #e04545; color: #e04545; }
+  .wb-seg { display: flex; }
+  .wb-seg .wb-btn { border-radius: 0; }
+  .wb-seg .wb-btn:first-child { border-radius: 8px 0 0 8px; }
+  .wb-seg .wb-btn:last-child { border-radius: 0 8px 8px 0; border-left: none; }
+  .wb-seg .wb-btn.active { background: var(--orange); color: #0f0d0d; border-color: var(--orange); }
+  .wb-toolbar-plays { margin-top: -4px; }
+  .wb-sel {
+    font-family: 'DM Sans', sans-serif; font-weight: 600; font-size: 13px;
+    padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--white); min-width: 150px;
+  }
+  #wbRecBtn.rec-on { border-color: #e04545; color: #e04545; animation: wbRecPulse 1.1s ease-in-out infinite; }
+  @keyframes wbRecPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(224,69,69,0.5); } 50% { box-shadow: 0 0 0 6px rgba(224,69,69,0); } }
+  .wb-token.wb-anim { transition: left .6s ease-in-out, top .6s ease-in-out; }
+  .wb-token.wb-live { transition: left .13s linear, top .13s linear; }
   .wb-court-wrap {
     position: relative; max-width: 920px; margin: 0 auto;
     touch-action: none; user-select: none; -webkit-user-select: none;
@@ -1906,10 +1921,22 @@
     </div>
     <div class="tab-content" id="tab-whiteboard">
       <div class="wb-toolbar">
+        <div class="wb-seg">
+          <button class="wb-btn active" id="wbModeOff" onclick="wbSetMode('off')">Offense</button>
+          <button class="wb-btn" id="wbModeDef" onclick="wbSetMode('def')">Defense</button>
+        </div>
         <button class="wb-btn" onclick="wbLoadPlayers()">Load On-Court Players</button>
         <button class="wb-btn" onclick="wbAddO()">+ Player</button>
         <button class="wb-btn wb-btn-x" onclick="wbAddX()">+ Defender</button>
+        <button class="wb-btn" onclick="wbSaveDefault()">Save Formation</button>
         <button class="wb-btn wb-btn-clear" onclick="wbClear()">Clear Board</button>
+      </div>
+      <div class="wb-toolbar wb-toolbar-plays">
+        <select class="wb-sel" id="wbPlaySel"></select>
+        <button class="wb-btn" onclick="wbPlaySelected()">&#9654; Play</button>
+        <button class="wb-btn" id="wbRecBtn" onclick="wbRecordToggle()">&#9679; Record</button>
+        <button class="wb-btn" id="wbDubBtn" onclick="wbOverdub()">&#10227; Overdub</button>
+        <button class="wb-btn wb-btn-clear" onclick="wbDeletePlay()">Delete</button>
       </div>
       <div class="wb-court-wrap" id="wbCourt">
         <svg viewBox="0 0 1000 560" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
@@ -1959,7 +1986,7 @@
           <line x1="70" y1="250" x2="70" y2="310" stroke="#f5efe6" stroke-width="4"/>
           <circle cx="82.5" cy="280" r="9.5" fill="none" stroke="#ff8c2e" stroke-width="3.5"/>
           <path d="M 82.5 240 A 40 40 0 0 1 82.5 320" fill="none" stroke="#f5efe6" stroke-width="2"/>
-          <path d="M 30 60 L 170 60 A 237.5 237.5 0 0 1 170 500 L 30 500" fill="none" stroke="#f5efe6" stroke-width="3.5"/>
+          <path d="M 30 89.5 A 197.5 197.5 0 0 1 30 470.5" fill="none" stroke="#f5efe6" stroke-width="3.5"/>
 
           <!-- RIGHT: mirrored -->
           <rect x="780" y="200" width="190" height="160" fill="none" stroke="#f5efe6" stroke-width="3"/>
@@ -1968,13 +1995,13 @@
           <line x1="930" y1="250" x2="930" y2="310" stroke="#f5efe6" stroke-width="4"/>
           <circle cx="917.5" cy="280" r="9.5" fill="none" stroke="#ff8c2e" stroke-width="3.5"/>
           <path d="M 917.5 240 A 40 40 0 0 0 917.5 320" fill="none" stroke="#f5efe6" stroke-width="2"/>
-          <path d="M 970 60 L 830 60 A 237.5 237.5 0 0 0 830 500 L 970 500" fill="none" stroke="#f5efe6" stroke-width="3.5"/>
+          <path d="M 970 89.5 A 197.5 197.5 0 0 0 970 470.5" fill="none" stroke="#f5efe6" stroke-width="3.5"/>
 
           <!-- soft lighting -->
           <rect x="0" y="0" width="1000" height="560" rx="14" fill="url(#wbVignette)" pointer-events="none"/>
         </svg>
       </div>
-      <p class="wb-hint">Drag tokens to position players. Double-tap a token to remove it.</p>
+      <p class="wb-hint">Drag tokens to position players — Offense and Defense keep separate spots. Save Formation makes the current layout the default for Load On-Court Players. Record: press &#9679;, move one player through the play in real time, press stop and save. Then press &#10227; Overdub — the play replays while you drag the next player in sync. Layer a pass per player until everyone moves together. Double-tap a token to remove it.</p>
     </div>
     <div class="subs-commit-bar" id="subsCommitBar">
       <div class="subs-commit-summary" id="subsCommitSummary"></div>
@@ -3919,15 +3946,27 @@
     if (name === 'stats') renderStatsTable();
     if (name === 'season') renderSeason();
     if (name === 'rotation') renderRotation();
-    if (name === 'whiteboard') wbSyncLogo();
+    if (name === 'whiteboard') { wbSyncLogo(); wbSyncPlayers(); }
     if (name === 'subs') renderSubs();
     else { var _scb = document.getElementById('subsCommitBar'); if (_scb) _scb.classList.remove('show'); }
   }
 
   // ─── WHITEBOARD ───
-  let wbOCount = 0, wbXCount = 0;
+  let wbMode = 'off';                          // 'off' | 'def'
+  let wbOCount = 0, wbXCount = 0, wbIdSeq = 0;
+  let wbRec = null;                            // { frames: [] } while recording
+  let wbPlaying = false;
+  let wbDubbing = false;                       // overdub: playback + recording at once
+  let wbPlayGen = 0;                           // increments to cancel an in-flight playback
+  let wbPlays = {};
+  try { wbPlays = JSON.parse(localStorage.getItem('bucketboard_wb_plays') || '{}'); } catch (e) { wbPlays = {}; }
 
-  const WB_SPOTS = [ [30,50], [22,20], [22,80], [11,34], [11,66] ]; // PG, wings, blocks (% of court, attacking left hoop)
+  const WB_OFF_SPOTS = [ [30,50], [22,20], [22,80], [11,34], [11,66] ];
+  const WB_DEF_SPOTS = [ [70,50], [78,20], [78,80], [89,34], [89,66] ];
+
+  function wbTokens() { return Array.from(document.querySelectorAll('#wbCourt .wb-token')); }
+  function wbSetPos(t, x, y) { t.style.left = x + '%'; t.style.top = y + '%'; }
+  function wbToast(msg) { showAlarmToast(msg, 'var(--orange)'); }
 
   function wbSyncLogo() {
     const src = document.querySelector('.logo img').src;
@@ -3938,20 +3977,23 @@
     }
   }
 
-  function wbMakeToken(label, isX, xPct, yPct, pic) {
+  function wbMakeToken(label, isX, pos, pic, key) {
+    // pos = { off:{x,y}, def:{x,y} }
     const court = document.getElementById('wbCourt');
     const t = document.createElement('div');
     t.className = 'wb-token' + (isX ? ' x' : '') + (pic ? ' has-pic' : '');
     t.textContent = label;
     if (pic) t.style.backgroundImage = "url('" + pic + "')";
-    t.style.left = xPct + '%';
-    t.style.top = yPct + '%';
+    t._wbId = 'tk' + (++wbIdSeq);
+    t._label = label; t._isX = !!isX; t._key = key || null;
+    t._pos = pos;
+    const p = pos[wbMode];
+    wbSetPos(t, p.x, p.y);
     t.addEventListener('pointerdown', wbDragStart);
     t.addEventListener('dblclick', () => t.remove());
-    // double-tap remove for touch
     t.addEventListener('pointerup', function () {
       const now = Date.now();
-      if (t._lastTap && now - t._lastTap < 350) { t.remove(); return; }
+      if (t._lastTap && now - t._lastTap < 350 && !t._dragMoved) { t.remove(); return; }
       t._lastTap = now;
     });
     court.appendChild(t);
@@ -3959,8 +4001,12 @@
   }
 
   function wbDragStart(e) {
+    if (wbPlaying && !wbDubbing) return;
+    if (wbDubbing) e.currentTarget._userOwned = true;
     e.preventDefault();
     const t = e.currentTarget;
+    t._dragMoved = false;
+    t.classList.remove('wb-anim');
     t.setPointerCapture(e.pointerId);
     const court = document.getElementById('wbCourt');
     const move = (ev) => {
@@ -3969,43 +4015,258 @@
       let y = ((ev.clientY - r.top) / r.height) * 100;
       x = Math.max(2, Math.min(98, x));
       y = Math.max(2, Math.min(98, y));
-      t.style.left = x + '%';
-      t.style.top = y + '%';
+      wbSetPos(t, x, y);
+      t._dragMoved = true;
     };
     const up = () => {
       t.removeEventListener('pointermove', move);
       t.removeEventListener('pointerup', up);
       t.removeEventListener('pointercancel', up);
+      if (t._dragMoved) {
+        t._pos[wbMode] = { x: parseFloat(t.style.left), y: parseFloat(t.style.top) };
+      }
+      setTimeout(() => { t._dragMoved = false; }, 0);
     };
     t.addEventListener('pointermove', move);
     t.addEventListener('pointerup', up);
     t.addEventListener('pointercancel', up);
   }
 
+  // --- offense / defense toggle ---
+  function wbSetMode(m) {
+    if (wbMode === m) return;
+    wbMode = m;
+    document.getElementById('wbModeOff').classList.toggle('active', m === 'off');
+    document.getElementById('wbModeDef').classList.toggle('active', m === 'def');
+    const list = wbTokens();
+    list.forEach(t => {
+      t.classList.add('wb-anim');
+      const p = t._pos[m];
+      wbSetPos(t, p.x, p.y);
+    });
+    setTimeout(() => list.forEach(t => t.classList.remove('wb-anim')), 650);
+  }
+
+  // --- default formation ---
+  function wbSaveDefault() {
+    const data = wbTokens().map(t => ({ label: t._label, isX: t._isX, key: t._key, off: t._pos.off, def: t._pos.def }));
+    if (!data.length) { wbToast('Nothing on the board to save'); return; }
+    try { localStorage.setItem('bucketboard_wb_default', JSON.stringify(data)); } catch (e) {}
+    wbToast('Formation saved as default');
+  }
+  function wbGetDefault() {
+    try { return JSON.parse(localStorage.getItem('bucketboard_wb_default') || 'null'); } catch (e) { return null; }
+  }
+
   function wbLoadPlayers() {
     let onCourt = players.filter(p => p.onCourt);
     if (!onCourt.length) onCourt = players.slice(0, 5);
-    if (!onCourt.length) { showAlarmToast('Add players to your roster first', 'var(--orange)'); return; }
-    onCourt.slice(0, 5).forEach((p, i) => {
-      const [x, y] = WB_SPOTS[i % WB_SPOTS.length];
-      wbMakeToken(p.number, false, x, y, subsPics[subsKey(p)] || null);
+    if (!onCourt.length) { wbToast('Add players to your roster first'); return; }
+    onCourt = onCourt.slice(0, 5);
+    wbTokens().filter(t => t._key).forEach(t => t.remove());
+    const saved = (wbGetDefault() || []).filter(d => d.key);
+    // match saved spots by exact player first, then hand leftover spots to subs in order
+    const used = new Set();
+    const exact = onCourt.map(p => {
+      const k = subsKey(p);
+      const hit = saved.find(d => d.key === k);
+      if (hit) used.add(hit);
+      return hit || null;
     });
+    const leftovers = saved.filter(d => !used.has(d));
+    onCourt.forEach((p, i) => {
+      const k = subsKey(p);
+      let spot = exact[i];
+      if (!spot && leftovers.length) spot = leftovers.shift();
+      const pos = spot
+        ? { off: { x: spot.off.x, y: spot.off.y }, def: { x: spot.def.x, y: spot.def.y } }
+        : { off: { x: WB_OFF_SPOTS[i][0], y: WB_OFF_SPOTS[i][1] }, def: { x: WB_DEF_SPOTS[i][0], y: WB_DEF_SPOTS[i][1] } };
+      wbMakeToken(p.number, false, pos, subsPics[k] || null, k);
+    });
+  }
+
+  // auto-refresh player tokens when the on-court five changed (called on tab open)
+  function wbSyncPlayers() {
+    const current = players.filter(p => p.onCourt).map(p => subsKey(p)).sort().join(',');
+    const board = wbTokens().filter(t => t._key).map(t => t._key).sort().join(',');
+    if (board && current && board !== current) wbLoadPlayers();
   }
 
   function wbAddO() {
     wbOCount++;
-    wbMakeToken('O' + wbOCount, false, 45, 50);
+    wbMakeToken('O' + wbOCount, false, { off: { x: 45, y: 50 }, def: { x: 45, y: 50 } });
   }
-
   function wbAddX() {
     wbXCount++;
-    wbMakeToken('X' + wbXCount, true, 55, 50);
+    wbMakeToken('X' + wbXCount, true, { off: { x: 55, y: 50 }, def: { x: 55, y: 50 } });
+  }
+  function wbClear() {
+    wbTokens().forEach(t => t.remove());
+    wbOCount = 0; wbXCount = 0;
+    if (wbRec) { clearInterval(wbRec.timer); wbRec = null; wbUpdateRecBtn(); }
   }
 
-  function wbClear() {
-    document.querySelectorAll('#wbCourt .wb-token').forEach(t => t.remove());
-    wbOCount = 0; wbXCount = 0;
+  // --- play recording (real-time: samples all tokens 10x/sec so simultaneous movement replays as-is) ---
+  const WB_SAMPLE_MS = 100;
+
+  function wbSnapshot() {
+    const f = {};
+    wbTokens().forEach(t => { f[t._wbId] = [Math.round(parseFloat(t.style.left) * 10) / 10, Math.round(parseFloat(t.style.top) * 10) / 10]; });
+    return f;
   }
+  function wbSnapEq(a, b) {
+    const ka = Object.keys(a), kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    return ka.every(k => b[k] && a[k][0] === b[k][0] && a[k][1] === b[k][1]);
+  }
+  function wbUpdateRecBtn() {
+    const b = document.getElementById('wbRecBtn');
+    b.classList.toggle('rec-on', !!wbRec);
+    b.innerHTML = wbRec ? '&#9632; Stop &amp; Save' : '&#9679; Record';
+  }
+  function wbRecordToggle() {
+    if (wbPlaying) return;
+    if (wbRec) {
+      clearInterval(wbRec.timer);
+      wbPlayGen++;                              // cancel any overdub replay still stepping
+      wbRec.frames.push({ t: Date.now() - wbRec.t0, s: wbSnapshot() });
+      const wasDub = wbDubbing;
+      wbDubbing = false; wbPlaying = false;
+      document.getElementById('wbDubBtn').classList.remove('rec-on');
+      wbTokens().forEach(t => { t._userOwned = false; t.classList.remove('wb-live', 'wb-anim'); });
+      const moved = wbRec.frames.length > 2 || !wbSnapEq(wbRec.frames[0].s, wbRec.frames[wbRec.frames.length - 1].s);
+      if (!moved) { wbToast('Nothing moved — recording discarded'); wbRec = null; wbUpdateRecBtn(); return; }
+      const name = prompt(wasDub ? 'Save overdub as: (same name overwrites)' : 'Name this play:',
+                          wasDub ? wbRec.dubName : 'Play ' + (Object.keys(wbPlays).length + 1));
+      if (name) {
+        wbPlays[name] = {
+          v: 2,
+          tokens: wbTokens().map(t => ({ id: t._wbId, label: t._label, isX: t._isX, key: t._key })),
+          frames: wbRec.frames
+        };
+        try { localStorage.setItem('bucketboard_wb_plays', JSON.stringify(wbPlays)); } catch (e) {}
+        wbRefreshPlayList(name);
+        wbToast('Saved: ' + name);
+      }
+      wbRec = null;
+    } else {
+      if (!wbTokens().length) { wbToast('Put tokens on the court first'); return; }
+      wbRec = { t0: Date.now(), frames: [{ t: 0, s: wbSnapshot() }] };
+      wbRec.timer = setInterval(() => {
+        const s = wbSnapshot();
+        const last = wbRec.frames[wbRec.frames.length - 1];
+        if (!wbSnapEq(s, last.s)) wbRec.frames.push({ t: Date.now() - wbRec.t0, s });
+      }, WB_SAMPLE_MS);
+      wbToast('Recording — run the play in real time');
+    }
+    wbUpdateRecBtn();
+  }
+
+  function wbRefreshPlayList(selectName) {
+    const sel = document.getElementById('wbPlaySel');
+    const names = Object.keys(wbPlays);
+    sel.innerHTML = names.length
+      ? names.map(n => '<option' + (n === selectName ? ' selected' : '') + '>' + subsEsc(n) + '</option>').join('')
+      : '<option value="">No saved plays</option>';
+  }
+
+  function wbApplySnap(made, s, animClass) {
+    Object.keys(s).forEach(id => {
+      const t = made[id];
+      if (t && !t._userOwned) { if (animClass) t.classList.add(animClass); wbSetPos(t, s[id][0], s[id][1]); }
+    });
+  }
+
+  function wbNormalizeFrames(play) {
+    return play.v === 2 ? play.frames : play.frames.map((s, i) => ({ t: i * 850, s }));
+  }
+
+  // rebuild the board from a play's first frame; returns id -> token map
+  function wbBuildFromPlay(play, frames) {
+    wbTokens().forEach(t => t.remove());
+    const made = {};
+    play.tokens.forEach(d => {
+      const first = frames.find(f => f.s[d.id]);
+      if (!first) return;
+      const [x, y] = first.s[d.id];
+      const pic = d.key ? (subsPics[d.key] || null) : null;
+      const t = wbMakeToken(d.label, d.isX, { off: { x, y }, def: { x, y } }, pic, d.key);
+      t._wbId = d.id;
+      t._userOwned = false;
+      made[d.id] = t;
+    });
+    return made;
+  }
+
+  // steps through frames; onDone fires after the last frame (unless cancelled by wbPlayGen bump)
+  function wbRunFrames(made, frames, animClass, onDone) {
+    const gen = ++wbPlayGen;
+    let i = 1;
+    const step = () => {
+      if (gen !== wbPlayGen) return;
+      if (i >= frames.length) { if (onDone) onDone(); return; }
+      const f = frames[i++];
+      wbApplySnap(made, f.s, animClass);
+      const next = frames[i];
+      setTimeout(step, next ? Math.max(16, next.t - f.t) : 0);
+    };
+    setTimeout(step, frames[1] ? Math.min(frames[1].t, 400) : 400);
+  }
+
+  function wbPlaySelected() {
+    const name = document.getElementById('wbPlaySel').value;
+    const play = wbPlays[name];
+    if (!play) { wbToast('No play selected'); return; }
+    if (wbPlaying || wbRec) return;
+    wbPlaying = true;
+    const frames = wbNormalizeFrames(play);
+    const made = wbBuildFromPlay(play, frames);
+    const animClass = play.v === 2 ? 'wb-live' : 'wb-anim';
+    wbRunFrames(made, frames, animClass, () => {
+      setTimeout(() => {
+        Object.values(made).forEach(t => { t.classList.remove('wb-live', 'wb-anim'); });
+        wbPlaying = false;
+      }, 300);
+    });
+  }
+
+  // Overdub: replay the selected play while recording everything — grab a token to take it
+  // over for this take; all other tokens keep their recorded motion. Layer as many passes as needed.
+  function wbOverdub() {
+    if (wbRec || wbPlaying) return;
+    const name = document.getElementById('wbPlaySel').value;
+    const play = wbPlays[name];
+    if (!play) { wbToast('Select a play to overdub'); return; }
+    const frames = wbNormalizeFrames(play);
+    const made = wbBuildFromPlay(play, frames);
+    wbDubbing = true;
+    wbPlaying = true;
+    document.getElementById('wbDubBtn').classList.add('rec-on');
+    wbRec = { t0: Date.now(), frames: [{ t: 0, s: wbSnapshot() }], dubName: name };
+    wbRec.timer = setInterval(() => {
+      const s = wbSnapshot();
+      const last = wbRec.frames[wbRec.frames.length - 1];
+      if (!wbSnapEq(s, last.s)) wbRec.frames.push({ t: Date.now() - wbRec.t0, s });
+    }, WB_SAMPLE_MS);
+    wbRunFrames(made, frames, 'wb-live', () => {
+      Object.values(made).forEach(t => t.classList.remove('wb-live'));
+      wbPlaying = false; // replay finished; recording continues until Stop so the new layer can run longer
+    });
+    wbToast('Overdubbing "' + name + '" — grab a token to take it over, Stop to save');
+    wbUpdateRecBtn();
+  }
+
+  function wbDeletePlay() {
+    if (wbRec || wbPlaying) return;
+    const name = document.getElementById('wbPlaySel').value;
+    if (!wbPlays[name]) { wbToast('No play selected'); return; }
+    if (!confirm('Delete play "' + name + '"?')) return;
+    delete wbPlays[name];
+    try { localStorage.setItem('bucketboard_wb_plays', JSON.stringify(wbPlays)); } catch (e) {}
+    wbRefreshPlayList();
+  }
+
+  wbRefreshPlayList();
 
   // ─── LIVE TIMER UPDATES ───
   setInterval(() => {
