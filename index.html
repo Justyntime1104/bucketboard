@@ -1522,6 +1522,40 @@
   .subs-crop-actions { display:flex; gap:10px; }
   .subs-crop-actions .subs-btn { flex:1; text-align:center; }
 
+  /* ============ WHITEBOARD TAB ============ */
+  #tab-whiteboard { padding-bottom: 24px; }
+  .wb-toolbar { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin: 4px 0 12px; }
+  .wb-btn {
+    font-family: 'DM Sans', sans-serif; font-weight: 600; font-size: 13px;
+    padding: 9px 14px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--white); cursor: pointer; transition: all .12s;
+  }
+  .wb-btn:hover { border-color: var(--orange); color: var(--orange); }
+  .wb-btn-x:hover { border-color: #e04545; color: #e04545; }
+  .wb-btn-clear { color: var(--muted); }
+  .wb-btn-clear:hover { border-color: #e04545; color: #e04545; }
+  .wb-court-wrap {
+    position: relative; max-width: 680px; margin: 0 auto;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  .wb-court-wrap svg {
+    width: 100%; height: auto; display: block;
+    background: rgba(232,114,12,0.04);
+    border: 1px solid var(--border); border-radius: 12px;
+  }
+  .wb-line { stroke: var(--white); opacity: 0.45; }
+  .wb-token {
+    position: absolute; width: 46px; height: 46px; margin: -23px 0 0 -23px;
+    border-radius: 50%; background: var(--orange); color: #0f0d0d;
+    font-family: 'Bebas Neue', sans-serif; font-size: 21px; letter-spacing: 0.5px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.45); border: 2px solid rgba(255,255,255,0.75);
+    cursor: grab; touch-action: none; z-index: 5;
+  }
+  .wb-token:active { cursor: grabbing; z-index: 6; }
+  .wb-token.x { background: #e04545; color: #fff; }
+  .wb-hint { color: var(--muted); font-size: 12px; text-align: center; margin-top: 10px; }
+
   /* ─── iPAD SCALE-DOWN (768px – 1194px) ─── */
   @media screen and (min-width: 768px) and (max-width: 1194px) {
     /* Header: compact */
@@ -1761,6 +1795,7 @@
         <div class="tab" data-tab="stats" onclick="switchTab('stats')">Box Score</div>
         <div class="tab" data-tab="season" onclick="switchTab('season')">Season Stats</div>
         <div class="tab" data-tab="subs" onclick="switchTab('subs')">Subs &amp; Minutes</div>
+        <div class="tab" data-tab="whiteboard" onclick="switchTab('whiteboard')">Whiteboard</div>
       </div>
       <div class="tabs-right">
         <div class="undo-strip">
@@ -1870,6 +1905,35 @@
         Roster and minutes come from your live game — subs made here update the box score too. Tap a photo circle to add or reframe a picture (saved on this device).<br>
         Before tip-off, tap players to set your starting five, then press <b>Set Starters</b> to start the clock. During the game, tap to stage subs — bench players go in (green), court players come out (red) — then <b>Commit Subs</b> when the ref waves them in. Each on-court card shows total minutes and the current shift.
       </p>
+    </div>
+    <div class="tab-content" id="tab-whiteboard">
+      <div class="wb-toolbar">
+        <button class="wb-btn" onclick="wbLoadPlayers()">Load On-Court Players</button>
+        <button class="wb-btn" onclick="wbAddO()">+ Player</button>
+        <button class="wb-btn wb-btn-x" onclick="wbAddX()">+ Defender</button>
+        <button class="wb-btn wb-btn-clear" onclick="wbClear()">Clear Board</button>
+      </div>
+      <div class="wb-court-wrap" id="wbCourt">
+        <svg viewBox="0 0 500 470" xmlns="http://www.w3.org/2000/svg">
+          <!-- boundary -->
+          <rect x="2" y="2" width="496" height="466" fill="none" class="wb-line" stroke-width="3"/>
+          <!-- half court line + center circle (top) -->
+          <path d="M 190 2 A 60 60 0 0 0 310 2" fill="none" class="wb-line" stroke-width="2"/>
+          <!-- key -->
+          <rect x="170" y="280" width="160" height="188" fill="rgba(232,114,12,0.07)" class="wb-line" stroke-width="2"/>
+          <!-- free throw circle -->
+          <path d="M 190 280 A 60 60 0 0 1 310 280" fill="none" class="wb-line" stroke-width="2"/>
+          <path d="M 190 280 A 60 60 0 0 0 310 280" fill="none" class="wb-line" stroke-width="2" stroke-dasharray="10 8"/>
+          <!-- backboard + hoop -->
+          <line x1="220" y1="432" x2="280" y2="432" class="wb-line" stroke-width="3"/>
+          <circle cx="250" cy="419" r="9" fill="none" stroke="var(--orange)" stroke-width="2.5"/>
+          <!-- restricted area -->
+          <path d="M 210 468 L 210 419 A 40 40 0 0 1 290 419 L 290 468" fill="none" class="wb-line" stroke-width="1.5"/>
+          <!-- 3pt line -->
+          <path d="M 30 468 L 30 330 A 237.5 237.5 0 0 1 470 330 L 470 468" fill="none" class="wb-line" stroke-width="2.5"/>
+        </svg>
+      </div>
+      <p class="wb-hint">Drag tokens to position players. Double-tap a token to remove it.</p>
     </div>
     <div class="subs-commit-bar" id="subsCommitBar">
       <div class="subs-commit-summary" id="subsCommitSummary"></div>
@@ -3816,6 +3880,79 @@
     if (name === 'rotation') renderRotation();
     if (name === 'subs') renderSubs();
     else { var _scb = document.getElementById('subsCommitBar'); if (_scb) _scb.classList.remove('show'); }
+  }
+
+  // ─── WHITEBOARD ───
+  let wbOCount = 0, wbXCount = 0;
+
+  const WB_SPOTS = [ [50,20], [22,42], [78,42], [30,78], [70,78] ]; // PG, wings, blocks (% of court)
+
+  function wbMakeToken(label, isX, xPct, yPct) {
+    const court = document.getElementById('wbCourt');
+    const t = document.createElement('div');
+    t.className = 'wb-token' + (isX ? ' x' : '');
+    t.textContent = label;
+    t.style.left = xPct + '%';
+    t.style.top = yPct + '%';
+    t.addEventListener('pointerdown', wbDragStart);
+    t.addEventListener('dblclick', () => t.remove());
+    // double-tap remove for touch
+    t.addEventListener('pointerup', function () {
+      const now = Date.now();
+      if (t._lastTap && now - t._lastTap < 350) { t.remove(); return; }
+      t._lastTap = now;
+    });
+    court.appendChild(t);
+    return t;
+  }
+
+  function wbDragStart(e) {
+    e.preventDefault();
+    const t = e.currentTarget;
+    t.setPointerCapture(e.pointerId);
+    const court = document.getElementById('wbCourt');
+    const move = (ev) => {
+      const r = court.getBoundingClientRect();
+      let x = ((ev.clientX - r.left) / r.width) * 100;
+      let y = ((ev.clientY - r.top) / r.height) * 100;
+      x = Math.max(2, Math.min(98, x));
+      y = Math.max(2, Math.min(98, y));
+      t.style.left = x + '%';
+      t.style.top = y + '%';
+    };
+    const up = () => {
+      t.removeEventListener('pointermove', move);
+      t.removeEventListener('pointerup', up);
+      t.removeEventListener('pointercancel', up);
+    };
+    t.addEventListener('pointermove', move);
+    t.addEventListener('pointerup', up);
+    t.addEventListener('pointercancel', up);
+  }
+
+  function wbLoadPlayers() {
+    let onCourt = players.filter(p => p.onCourt);
+    if (!onCourt.length) onCourt = players.slice(0, 5);
+    if (!onCourt.length) { showAlarmToast('Add players to your roster first', 'var(--orange)'); return; }
+    onCourt.slice(0, 5).forEach((p, i) => {
+      const [x, y] = WB_SPOTS[i % WB_SPOTS.length];
+      wbMakeToken(p.number, false, x, y);
+    });
+  }
+
+  function wbAddO() {
+    wbOCount++;
+    wbMakeToken('O' + wbOCount, false, 50, 50);
+  }
+
+  function wbAddX() {
+    wbXCount++;
+    wbMakeToken('X' + wbXCount, true, 50, 60);
+  }
+
+  function wbClear() {
+    document.querySelectorAll('#wbCourt .wb-token').forEach(t => t.remove());
+    wbOCount = 0; wbXCount = 0;
   }
 
   // ─── LIVE TIMER UPDATES ───
