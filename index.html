@@ -1546,6 +1546,8 @@
     background: var(--panel); color: var(--white); min-width: 150px;
   }
   #wbRecBtn.rec-on { border-color: #e04545; color: #e04545; animation: wbRecPulse 1.1s ease-in-out infinite; }
+  #wbPlayBtn.rec-on { border-color: #3aaa6e; color: #3aaa6e; }
+  .wb-token.wb-recording { box-shadow: 0 0 0 4px rgba(224,69,69,0.7), 0 3px 10px rgba(0,0,0,0.5) !important; animation: wbRecPulse 1s ease-in-out infinite; }
   @keyframes wbRecPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(224,69,69,0.5); } 50% { box-shadow: 0 0 0 6px rgba(224,69,69,0); } }
   .wb-token.wb-anim { transition: left .6s ease-in-out, top .6s ease-in-out; }
   .wb-token.ball {
@@ -1806,7 +1808,7 @@
 
   <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px;">
     <div class="settings-label" style="margin-bottom:6px;">Live Sync (GitHub)</div>
-    <div class="settings-hint" style="margin-bottom:8px;">Master pushes a snapshot to the repo every few seconds; Viewer devices poll it. Use a fine-grained token limited to this repo with Contents read &amp; write.</div>
+    <div class="settings-hint" style="margin-bottom:8px;">Automatic, every 5 seconds — no button to press. Master pushes clock/score/stats to the repo; Viewer polls and displays them. Viewer can also make substitutions (tap players in the Subs tab as normal) — those sync back to Master and then out to everyone else. Use a fine-grained token limited to this repo with Contents read &amp; write.</div>
     <div style="display:flex;gap:8px;margin-bottom:8px;">
       <input type="text" id="lsOwner" placeholder="owner (Justyntime1104)" style="flex:1;" class="ls-input">
       <input type="text" id="lsRepo" placeholder="repo (bucketboard)" style="flex:1;" class="ls-input">
@@ -1818,12 +1820,19 @@
     <div style="display:flex;gap:8px;align-items:center;">
       <select id="lsMode" class="ls-input" style="flex:1;">
         <option value="off">Sync Off</option>
-        <option value="master">Master (this device runs the game)</option>
-        <option value="viewer">Viewer (read-only live display)</option>
+        <option value="master">Master (runs the game — clock, score, stats)</option>
+        <option value="viewer">Viewer / Slave (live display, can also sub players)</option>
       </select>
       <button class="btn-save-settings" style="flex:1;font-size:13px;" onclick="lsApply()">Apply Sync</button>
     </div>
     <div class="settings-hint" id="lsStatus" style="margin-top:6px;">Sync off</div>
+  </div>
+
+  <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px;">
+    <div class="settings-label" style="margin-bottom:6px;">Full Data Sync (GitHub) — manual, before/after games</div>
+    <div class="settings-hint" style="margin-bottom:8px;">For roster edits and saved game history — things you set up before or clean up after a game, not during one (this one's a manual button on purpose, since auto-applying it mid-game would reload the page and interrupt play). Live Sync above handles the actual in-game score/clock/subs automatically. Uses the same owner/repo/token. Tap Sync Now on each device after making roster or history changes.</div>
+    <button class="btn-save-settings" style="width:100%;" onclick="fsSyncNow()">🔄 Sync Now</button>
+    <div class="settings-hint" id="fsStatus" style="margin-top:6px;">Not synced yet</div>
   </div>
 
   <div style="display:flex;gap:8px;margin-top:8px;">
@@ -1998,11 +2007,13 @@
         <button class="wb-btn wb-btn-clear" onclick="wbClear()">Clear Board</button>
       </div>
       <div class="wb-toolbar wb-toolbar-plays">
-        <select class="wb-sel" id="wbPlaySel"></select>
-        <button class="wb-btn" onclick="wbPlaySelected()">&#9654; Play</button>
-        <button class="wb-btn" id="wbRecBtn" onclick="wbRecordToggle()">&#9679; Record</button>
-        <button class="wb-btn" id="wbDubBtn" onclick="wbOverdub()">&#10227; Overdub</button>
-        <button class="wb-btn wb-btn-clear" onclick="wbDeletePlay()">Delete</button>
+        <select class="wb-sel" id="wbPlaySel" onchange="wbOnPlayPick()"></select>
+        <button class="wb-btn" onclick="wbNewPlay()">+ New Play</button>
+        <button class="wb-btn" id="wbRecBtn" onclick="wbRecordToggle()">&#9679; Record Player</button>
+        <button class="wb-btn" id="wbPlayBtn" onclick="wbPlayOrStop()">&#9654; Play</button>
+        <select class="wb-sel" id="wbSpeedSel" style="min-width:80px;"><option value="1">1x</option><option value="0.5">&#189; speed</option></select>
+        <button class="wb-btn wb-btn-clear" onclick="wbClearTracks()">Clear Motion</button>
+        <button class="wb-btn wb-btn-clear" onclick="wbDeletePlay()">Delete Play</button>
         <span class="wb-act-sep"></span>
         <button class="wb-btn wb-act wb-act-pick" onclick="wbActionTap('pick')">Pick</button>
         <button class="wb-btn wb-act wb-act-cut" onclick="wbActionTap('cut')">Cut</button>
@@ -2031,48 +2042,46 @@
             </radialGradient>
           </defs>
 
-          <!-- floor: dark apron, lighter playing surface, plank seams -->
+          <!-- floor -->
           <rect x="0" y="0" width="1000" height="560" rx="14" fill="url(#wbWoodDark)"/>
           <rect x="0" y="0" width="1000" height="560" rx="14" fill="url(#wbPlanks)"/>
           <rect x="30" y="30" width="940" height="500" fill="url(#wbWood)"/>
           <rect x="30" y="30" width="940" height="500" fill="url(#wbPlanks)"/>
 
-          <!-- painted keys (team color) -->
-          <rect x="30" y="200" width="190" height="160" fill="var(--orange)" fill-opacity="0.75"/>
-          <rect x="780" y="200" width="190" height="160" fill="var(--orange)" fill-opacity="0.75"/>
+          <!-- painted lanes -->
+          <rect x="30" y="220" width="190" height="120" fill="var(--orange)" fill-opacity="0.75"/>
+          <rect x="780" y="220" width="190" height="120" fill="var(--orange)" fill-opacity="0.75"/>
 
           <!-- boundary -->
           <rect x="30" y="30" width="940" height="500" fill="none" stroke="#f5efe6" stroke-width="4"/>
 
-          <!-- half-court line + center circle -->
+          <!-- half-court -->
           <line x1="500" y1="30" x2="500" y2="530" stroke="#f5efe6" stroke-width="3"/>
           <circle cx="500" cy="280" r="60" fill="none" stroke="#f5efe6" stroke-width="3"/>
           <circle cx="500" cy="280" r="53" fill="rgba(255,255,255,0.10)"/>
           <image id="wbCenterLogo" x="447" y="227" width="106" height="106" clip-path="url(#wbLogoClip)" preserveAspectRatio="xMidYMid meet" opacity="0.95"/>
 
-          <!-- LEFT -->
-          <rect x="30" y="200" width="190" height="160" fill="none" stroke="#f5efe6" stroke-width="3"/>
+          <!-- LEFT half -->
+          <rect x="30" y="220" width="190" height="120" fill="none" stroke="#f5efe6" stroke-width="3"/>
           <path d="M 220 220 A 60 60 0 0 1 220 340" fill="none" stroke="#f5efe6" stroke-width="3"/>
           <path d="M 220 220 A 60 60 0 0 0 220 340" fill="none" stroke="#f5efe6" stroke-width="2.5" stroke-dasharray="12 9"/>
-          <line x1="70" y1="247" x2="70" y2="313" stroke="#f5efe6" stroke-width="4"/>
-          <circle cx="82.5" cy="280" r="8" fill="none" stroke="#ff8c2e" stroke-width="3"/>
-          <path d="M 82.5 240 A 40 40 0 0 1 82.5 320" fill="none" stroke="#f5efe6" stroke-width="2"/>
-          <path d="M 30 30 A 250 250 0 0 1 30 530" fill="none" stroke="#f5efe6" stroke-width="3.5"/>
+          <line x1="70" y1="250" x2="70" y2="310" stroke="#f5efe6" stroke-width="4"/>
+          <circle cx="82" cy="280" r="8" fill="none" stroke="#ff8c2e" stroke-width="3"/>
+          <path d="M 30 66 A 220 220 0 1 1 30 494" fill="none" stroke="#f5efe6" stroke-width="3.5"/>
 
-          <!-- RIGHT -->
-          <rect x="780" y="200" width="190" height="160" fill="none" stroke="#f5efe6" stroke-width="3"/>
+          <!-- RIGHT half -->
+          <rect x="780" y="220" width="190" height="120" fill="none" stroke="#f5efe6" stroke-width="3"/>
           <path d="M 780 220 A 60 60 0 0 0 780 340" fill="none" stroke="#f5efe6" stroke-width="3"/>
           <path d="M 780 220 A 60 60 0 0 1 780 340" fill="none" stroke="#f5efe6" stroke-width="2.5" stroke-dasharray="12 9"/>
-          <line x1="930" y1="247" x2="930" y2="313" stroke="#f5efe6" stroke-width="4"/>
-          <circle cx="917.5" cy="280" r="8" fill="none" stroke="#ff8c2e" stroke-width="3"/>
-          <path d="M 917.5 240 A 40 40 0 0 0 917.5 320" fill="none" stroke="#f5efe6" stroke-width="2"/>
-          <path d="M 970 30 A 250 250 0 0 0 970 530" fill="none" stroke="#f5efe6" stroke-width="3.5"/>
+          <line x1="930" y1="250" x2="930" y2="310" stroke="#f5efe6" stroke-width="4"/>
+          <circle cx="918" cy="280" r="8" fill="none" stroke="#ff8c2e" stroke-width="3"/>
+          <path d="M 970 66 A 220 220 0 1 0 970 494" fill="none" stroke="#f5efe6" stroke-width="3.5"/>
 
-          <!-- soft lighting -->
+          <!-- lighting -->
           <rect x="0" y="0" width="1000" height="560" rx="14" fill="url(#wbVignette)" pointer-events="none"/>
         </svg>
       </div>
-      <p class="wb-hint">Drag tokens to position players — Offense and Defense keep separate spots. Save Formation makes the current layout the default for Load On-Court Players. Record: press &#9679;, move one player through the play in real time, press stop and save. Then press &#10227; Overdub to arm it — the replay and recording both start the instant you grab a token, so your new layer is synced automatically. Drop the ball on a player and it rides with them until you grab it again. Layer a pass per player until everyone moves together. While recording, tap Pick / Cut / Shoot / Pass to stamp an action bubble on the last player you touched. Double-tap a token to remove it.</p>
+      <p class="wb-hint">Record a play one player at a time: pick <b>+ New Play</b>, press <b>Record Player</b>, grab a player and drag their path, press <b>Stop</b>. Repeat for each player — every track layers into the same play and they all move together on <b>Play</b>. Give a player the ball (drop it on them) before recording and it rides along. <b>Clear Motion</b> wipes the tracks to redo; <b>Delete Play</b> removes it.</p>
     </div>
     <div class="subs-commit-bar" id="subsCommitBar">
       <div class="subs-commit-summary" id="subsCommitSummary"></div>
@@ -4075,9 +4084,15 @@
 
   const WB_BALL_DX = 2.6, WB_BALL_DY = -4.2;   // attached-ball offset from its player (% of court)
 
+  function wbBallToken() { return wbTokens().find(x => x._isBall) || null; }
   function wbAttachedBall(t) {
-    const ball = wbTokens().find(x => x._isBall);
-    return (ball && ball._attachedTo === t) ? ball : null;
+    const ball = wbBallToken();
+    return (ball && ball._attachedToId && ball._attachedToId === t._wbId) ? ball : null;
+  }
+  function wbBallOwner() {
+    const ball = wbBallToken();
+    if (!ball || !ball._attachedToId) return null;
+    return wbTokens().find(x => x._wbId === ball._attachedToId) || null;
   }
   function wbFollowBall(t) {
     const ball = wbAttachedBall(t);
@@ -4089,15 +4104,16 @@
   }
 
   function wbDragStart(e) {
-    if (wbArmed) wbOverdubBegin();               // your first grab starts the overdub clock
-    if (wbPlaying && !wbDubbing) return;
-    if (wbDubbing) e.currentTarget._userOwned = true;
+    if (wbPlaying) return;                        // no dragging during playback
+    if (wbTrackRec && wbTrackRec.armed) wbTrackBegin(e.currentTarget);
+    // if a track is recording a DIFFERENT token, ignore grabs on others
+    if (wbTrackRec && !wbTrackRec.armed && e.currentTarget._wbId !== wbTrackRec.id) return;
     wbLastTok = e.currentTarget;
     e.preventDefault();
     const t = e.currentTarget;
     t._dragMoved = false;
     t.classList.remove('wb-anim');
-    if (t._isBall) t._attachedTo = null;         // grabbing the ball detaches it
+    if (t._isBall) { t._attachedToId = null; t._attachedKey = null; }  // grabbing the ball detaches it
     t.setPointerCapture(e.pointerId);
     const court = document.getElementById('wbCourt');
     const move = (ev) => {
@@ -4107,10 +4123,8 @@
       x = Math.max(2, Math.min(98, x));
       y = Math.max(2, Math.min(98, y));
       wbSetPos(t, x, y);
-      if (!t._isBall) {
-        const ball = wbFollowBall(t);
-        if (ball && wbDubbing) ball._userOwned = true;  // ball riding your player is yours for this take
-      }
+      if (!t._isBall) wbFollowBall(t);
+      if (wbTrackRec && !wbTrackRec.armed && t._wbId === wbTrackRec.id) wbTrackSample(t._wbId, x, y);
       t._dragMoved = true;
     };
     const up = () => {
@@ -4129,7 +4143,8 @@
             if (d < bestD) { bestD = d; best = o; }
           });
           if (best) {
-            t._attachedTo = best;
+            t._attachedToId = best._wbId;
+            t._attachedKey = best._key || null;   // survive roster reloads
             wbFollowBall(best);
             t._pos[wbMode] = { x: parseFloat(t.style.left), y: parseFloat(t.style.top) };
           }
@@ -4158,9 +4173,12 @@
       wbSetPos(t, p.x, p.y);
     });
     list.forEach(t => {
-      if (t._isBall && t._attachedTo && document.getElementById('wbCourt').contains(t._attachedTo)) {
-        wbFollowBall(t._attachedTo);
-        t._pos[m] = { x: parseFloat(t.style.left), y: parseFloat(t.style.top) };
+      if (t._isBall && t._attachedToId) {
+        const owner = wbBallOwner();
+        if (owner) {
+          wbFollowBall(owner);
+          t._pos[m] = { x: parseFloat(t.style.left), y: parseFloat(t.style.top) };
+        }
       }
     });
     setTimeout(() => list.forEach(t => t.classList.remove('wb-anim')), 650);
@@ -4202,6 +4220,13 @@
         : { off: { x: WB_OFF_SPOTS[i][0], y: WB_OFF_SPOTS[i][1] }, def: { x: WB_DEF_SPOTS[i][0], y: WB_DEF_SPOTS[i][1] } };
       wbMakeToken(p.number, false, pos, subsPics[k] || null, k);
     });
+    // re-link the ball to its player across the rebuild
+    const ball = wbBallToken();
+    if (ball && ball._attachedKey) {
+      const owner = wbTokens().find(t => t._key === ball._attachedKey);
+      if (owner) { ball._attachedToId = owner._wbId; wbFollowBall(owner); }
+      else { ball._attachedToId = null; }
+    }
   }
 
   // auto-refresh player tokens when the on-court five changed (called on tab open)
@@ -4237,75 +4262,146 @@
   }
   function wbActionTap(kind) {
     let t = wbLastTok;
-    if (!t || !t._parent && !t.parentNode) t = null;
     if (t && !document.getElementById('wbCourt').contains(t)) t = null;
     if (!t) t = wbTokens().find(x => x._isBall) || wbTokens()[0];
     if (!t) { wbToast('Put tokens on the court first'); return; }
     wbBubble(t, kind);
-    if (wbRec) wbRec.events.push({ t: Date.now() - wbRec.t0, id: t._wbId, kind: kind });
+    // if recording a track, log the action at this track-time against the play
+    if (wbTrackRec && !wbTrackRec.armed) {
+      const name = wbCurrentPlayName();
+      const play = name && wbPlays[name];
+      if (play && play.v === 3) {
+        play.events = play.events || [];
+        play.events.push({ t: Date.now() - wbTrackRec.t0, id: t._wbId, kind: kind });
+        wbPersist();
+      }
+    }
   }
   function wbClear() {
+    if (wbPlaying) wbStopPlay();
+    if (wbTrackRec) wbStopTrack();
     wbTokens().forEach(t => t.remove());
     wbOCount = 0; wbXCount = 0;
-    if (wbRec) { clearInterval(wbRec.timer); wbRec = null; wbUpdateRecBtn(); }
-    if (wbArmed) { wbArmed = null; document.getElementById('wbDubBtn').classList.remove('rec-on'); }
+    wbUpdateRecBtn();
   }
 
-  // --- play recording (real-time: samples all tokens 10x/sec so simultaneous movement replays as-is) ---
-  const WB_SAMPLE_MS = 100;
+  // ─── PLAY RECORDING: per-player tracks, merged into one play ───
+  // Model: record ONE token's motion at a time as a timed path. Each recording = a "track".
+  // All tracks in a play start at t=0 and play together on one clock (rAF-smooth).
+  // The ball is not recorded as its own track — it's attached to a player id and rides along.
 
-  function wbSnapshot() {
-    const f = {};
-    wbTokens().forEach(t => { f[t._wbId] = [Math.round(parseFloat(t.style.left) * 10) / 10, Math.round(parseFloat(t.style.top) * 10) / 10]; });
-    return f;
+  let wbTrackRec = null;    // { id, ballAttached, samples:[{t,x,y}], t0 } while recording one player
+  let wbRafId = null;
+
+  function wbCurrentPlayName() { return document.getElementById('wbPlaySel').value; }
+  function wbEnsurePlay(name) {
+    if (!wbPlays[name]) wbPlays[name] = { v: 3, tracks: [], tokens: [], events: [] };
+    if (wbPlays[name].v !== 3) return null; // old format, don't mix
+    return wbPlays[name];
   }
-  function wbSnapEq(a, b) {
-    const ka = Object.keys(a), kb = Object.keys(b);
-    if (ka.length !== kb.length) return false;
-    return ka.every(k => b[k] && a[k][0] === b[k][0] && a[k][1] === b[k][1]);
+  function wbPersist() {
+    try { localStorage.setItem('bucketboard_wb_plays', JSON.stringify(wbPlays)); } catch (e) {}
   }
+
   function wbUpdateRecBtn() {
     const b = document.getElementById('wbRecBtn');
-    b.classList.toggle('rec-on', !!wbRec);
-    b.innerHTML = wbRec ? '&#9632; Stop &amp; Save' : '&#9679; Record';
+    if (!b) return;
+    b.classList.toggle('rec-on', !!wbTrackRec);
+    b.innerHTML = wbTrackRec ? '&#9632; Stop Track' : '&#9679; Record Player';
   }
+
+  // Called from wbDragStart's move handler while a track is recording
+  function wbTrackSample(id, x, y) {
+    if (!wbTrackRec || wbTrackRec.id !== id) return;
+    wbTrackRec.samples.push({ t: Date.now() - wbTrackRec.t0, x: x, y: y });
+  }
+
+  // Start recording: user must then drag ONE token. We arm, and the first token they grab
+  // becomes the tracked player. Grabbing shows which token is being recorded.
   function wbRecordToggle() {
     if (wbPlaying) return;
-    if (wbRec) {
-      clearInterval(wbRec.timer);
-      wbPlayGen++;                              // cancel any overdub replay still stepping
-      wbRec.frames.push({ t: Date.now() - wbRec.t0, s: wbSnapshot() });
-      const wasDub = wbDubbing;
-      wbDubbing = false; wbPlaying = false;
-      document.getElementById('wbDubBtn').classList.remove('rec-on');
-      wbTokens().forEach(t => { t._userOwned = false; t.classList.remove('wb-live', 'wb-anim'); });
-      const moved = wbRec.frames.length > 2 || !wbSnapEq(wbRec.frames[0].s, wbRec.frames[wbRec.frames.length - 1].s);
-      if (!moved) { wbToast('Nothing moved — recording discarded'); wbRec = null; wbUpdateRecBtn(); return; }
-      const name = prompt(wasDub ? 'Save overdub as: (same name overwrites)' : 'Name this play:',
-                          wasDub ? wbRec.dubName : 'Play ' + (Object.keys(wbPlays).length + 1));
-      if (name) {
-        wbPlays[name] = {
-          v: 2,
-          tokens: wbTokens().map(t => ({ id: t._wbId, label: t._label, isX: t._isX, key: t._key, ball: t._isBall || undefined })),
-          frames: wbRec.frames,
-          events: wbRec.events || []
-        };
-        try { localStorage.setItem('bucketboard_wb_plays', JSON.stringify(wbPlays)); } catch (e) {}
-        wbRefreshPlayList(name);
-        wbToast('Saved: ' + name);
-      }
-      wbRec = null;
-    } else {
-      if (!wbTokens().length) { wbToast('Put tokens on the court first'); return; }
-      wbRec = { t0: Date.now(), frames: [{ t: 0, s: wbSnapshot() }], events: [] };
-      wbRec.timer = setInterval(() => {
-        const s = wbSnapshot();
-        const last = wbRec.frames[wbRec.frames.length - 1];
-        if (!wbSnapEq(s, last.s)) wbRec.frames.push({ t: Date.now() - wbRec.t0, s });
-      }, WB_SAMPLE_MS);
-      wbToast('Recording — run the play in real time');
-    }
+    if (wbTrackRec) { wbStopTrack(); return; }
+    if (!wbTokens().length) { wbToast('Put players on the court first'); return; }
+    // Arm: wait for a grab
+    wbTrackRec = { id: null, armed: true, samples: [], t0: 0, ballAttached: false };
+    document.getElementById('wbRecBtn').classList.add('rec-on');
+    document.getElementById('wbRecBtn').innerHTML = '&#9679; Grab a player…';
+    wbToast('Grab the player you want to record');
+  }
+
+  // called by wbDragStart when a track is armed and a token is grabbed.
+  // Existing tracks replay on the board WHILE you record, on the same clock,
+  // so each new player is timed against the play's real motion (correct sequencing).
+  function wbTrackBegin(t) {
+    if (!wbTrackRec || !wbTrackRec.armed) return;
+    wbTrackRec.armed = false;
+    wbTrackRec.id = t._wbId;
+    wbTrackRec.t0 = Date.now();
+    wbTrackRec.isBall = !!t._isBall;
+    wbTrackRec.ballAttached = !t._isBall && !!wbAttachedBall(t);
+    wbTrackRec.samples.push({ t: 0, x: parseFloat(t.style.left), y: parseFloat(t.style.top) });
+    t.classList.add('wb-recording');
     wbUpdateRecBtn();
+    // live replay of already-recorded tracks, synced to this recording's clock
+    const name = wbCurrentPlayName();
+    const play = name && wbPlays[name];
+    if (play && play.v === 3 && play.tracks.length) {
+      const gen = ++wbPlayGen;
+      const made = {};
+      wbTokens().forEach(tok => { made[tok._wbId] = tok; });
+      const ballTok = wbBallToken();
+      const ballTrack = play.tracks.find(tr => tr.ball);
+      const loop = () => {
+        if (gen !== wbPlayGen || !wbTrackRec || wbTrackRec.id !== t._wbId) return;
+        const now = Date.now() - wbTrackRec.t0;
+        play.tracks.forEach(tr => {
+          if (tr.id === t._wbId) return;               // the one being recorded is yours
+          const tok = made[tr.id];
+          if (!tok) return;
+          const p = wbSampleAt(tr.samples, now);
+          tok.style.left = p.x + '%';
+          tok.style.top = p.y + '%';
+          if (ballTok && ballTrack && tr.id === ballTrack.id && !wbTrackRec.isBall) {
+            ballTok.style.left = Math.max(2, Math.min(98, p.x + WB_BALL_DX)) + '%';
+            ballTok.style.top = Math.max(2, Math.min(98, p.y + WB_BALL_DY)) + '%';
+          }
+        });
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    }
+  }
+
+  function wbStopTrack() {
+    const rec = wbTrackRec;
+    wbTrackRec = null;
+    wbPlayGen++;                                  // halt the live replay loop
+    document.querySelectorAll('.wb-recording').forEach(el => el.classList.remove('wb-recording'));
+    wbUpdateRecBtn();
+    if (!rec || rec.armed) { return; } // never grabbed anything
+    if (rec.samples.length < 2) { wbToast('No movement captured'); return; }
+    // final sample at current spot
+    const tok = wbTokens().find(t => t._wbId === rec.id);
+    if (tok) rec.samples.push({ t: Date.now() - rec.t0, x: parseFloat(tok.style.left), y: parseFloat(tok.style.top) });
+
+    let name = wbCurrentPlayName();
+    if (!name) {
+      name = prompt('Name this play:', 'Play ' + (Object.keys(wbPlays).length + 1));
+      if (!name) return;
+    }
+    const play = wbEnsurePlay(name);
+    if (!play) { wbToast('That name is an old-format play; pick a new name'); return; }
+
+    // snapshot token identity for this id (label, pic key, isX)
+    const meta = tok ? { id: tok._wbId, label: tok._label, isX: tok._isX, key: tok._key, isBall: tok._isBall || undefined } : { id: rec.id };
+    // remove any prior track for this same player id (re-recording replaces)
+    play.tracks = play.tracks.filter(tr => tr.id !== rec.id);
+    play.tracks.push({ id: rec.id, meta: meta, ball: rec.ballAttached, samples: rec.samples });
+    // remember all current token identities so playback can rebuild the full board
+    play.tokens = wbTokens().map(t => ({ id: t._wbId, label: t._label, isX: t._isX, key: t._key, ball: t._isBall || undefined, start: { x: parseFloat(t.style.left), y: parseFloat(t.style.top) } }));
+    wbPersist();
+    wbRefreshPlayList(name);
+    wbToast('Track saved for #' + (meta.label || '?') + '  (' + play.tracks.length + ' player' + (play.tracks.length>1?'s':'') + ' recorded)');
   }
 
   function wbRefreshPlayList(selectName) {
@@ -4316,19 +4412,86 @@
       : '<option value="">No saved plays</option>';
   }
 
-  function wbApplySnap(made, s, animClass) {
-    Object.keys(s).forEach(id => {
-      const t = made[id];
-      if (t && !t._userOwned) { if (animClass) t.classList.add(animClass); wbSetPos(t, s[id][0], s[id][1]); }
+  // sample a track's position at time t (ms) with linear interpolation between samples
+  function wbSampleAt(samples, t) {
+    if (t <= samples[0].t) return { x: samples[0].x, y: samples[0].y };
+    const last = samples[samples.length - 1];
+    if (t >= last.t) return { x: last.x, y: last.y };
+    for (let i = 1; i < samples.length; i++) {
+      if (t <= samples[i].t) {
+        const a = samples[i - 1], b = samples[i];
+        const f = (t - a.t) / (b.t - a.t || 1);
+        return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+      }
+    }
+    return { x: last.x, y: last.y };
+  }
+
+  function wbPlaySelected() {
+    if (wbPlaying || wbTrackRec) return;
+    const name = wbCurrentPlayName();
+    const play = wbPlays[name];
+    if (!play) { wbToast('No play selected'); return; }
+    if (play.v !== 3) { wbPlayLegacy(play); return; }
+    if (!play.tracks.length) { wbToast('This play has no recorded players yet'); return; }
+
+    wbPlaying = true;
+    if (wbRafId) cancelAnimationFrame(wbRafId);
+
+    // rebuild board from stored token identities at their start positions
+    wbTokens().forEach(t => t.remove());
+    const made = {};
+    (play.tokens || []).forEach(d => {
+      const pos = d.start || { x: 50, y: 50 };
+      const pic = d.key ? (subsPics[d.key] || null) : null;
+      const tk = wbMakeToken(d.label, d.isX, { off: { x: pos.x, y: pos.y }, def: { x: pos.x, y: pos.y } }, pic, d.key, d.ball);
+      tk._wbId = d.id;
+      made[d.id] = tk;
     });
+
+    // ball: rides the flagged player's track, unless the ball has its OWN recorded track
+    const ballTrack = play.tracks.find(tr => tr.ball);
+    const ballOwnTrack = play.tracks.find(tr => tr.meta && tr.meta.isBall);
+    const ballTok = Object.values(made).find(t => t._isBall);
+    if (ballTok && ballTrack) { ballTok._attachedToId = ballTrack.id; }  // stays attached after playback too
+
+    const speed = parseFloat((document.getElementById('wbSpeedSel') || { value: '1' }).value) || 1;
+    const duration = Math.max.apply(null, play.tracks.map(tr => tr.samples[tr.samples.length - 1].t)) / speed;
+    const startWall = performance.now();
+
+    const frame = (now) => {
+      if (!wbPlaying) return;
+      const t = (now - startWall) * speed;
+      play.tracks.forEach(tr => {
+        const tok = made[tr.id];
+        if (!tok) return;
+        const p = wbSampleAt(tr.samples, t);
+        tok.style.left = p.x + '%';
+        tok.style.top = p.y + '%';
+        if (ballTok && ballTrack && !ballOwnTrack && tr.id === ballTrack.id) {
+          ballTok.style.left = Math.max(2, Math.min(98, p.x + WB_BALL_DX)) + '%';
+          ballTok.style.top = Math.max(2, Math.min(98, p.y + WB_BALL_DY)) + '%';
+        }
+      });
+      // fire event bubbles whose time we just passed
+      (play.events || []).forEach(e => {
+        if (!e._fired && t >= e.t) { e._fired = true; const tk = made[e.id]; if (tk) wbBubble(tk, e.kind); }
+      });
+      if ((now - startWall) <= duration + 200) {
+        wbRafId = requestAnimationFrame(frame);
+      } else {
+        wbPlaying = false;
+        (play.events || []).forEach(e => { delete e._fired; });
+      }
+    };
+    (play.events || []).forEach(e => { delete e._fired; });
+    wbRafId = requestAnimationFrame(frame);
   }
 
-  function wbNormalizeFrames(play) {
-    return play.v === 2 ? play.frames : play.frames.map((s, i) => ({ t: i * 850, s }));
-  }
-
-  // rebuild the board from a play's first frame; returns id -> token map
-  function wbBuildFromPlay(play, frames) {
+  // legacy v2 playback kept so old saved plays still run
+  function wbPlayLegacy(play) {
+    const frames = play.v === 2 ? play.frames : play.frames.map((s, i) => ({ t: i * 850, s }));
+    wbPlaying = true;
     wbTokens().forEach(t => t.remove());
     const made = {};
     play.tokens.forEach(d => {
@@ -4336,108 +4499,83 @@
       if (!first) return;
       const [x, y] = first.s[d.id];
       const pic = d.key ? (subsPics[d.key] || null) : null;
-      const t = wbMakeToken(d.label, d.isX, { off: { x, y }, def: { x, y } }, pic, d.key, d.ball);
-      t._wbId = d.id;
-      t._userOwned = false;
-      made[d.id] = t;
+      const t = wbMakeToken(d.label, d.isX, { off:{x,y}, def:{x,y} }, pic, d.key, d.ball);
+      t._wbId = d.id; made[d.id] = t;
     });
-    return made;
-  }
-
-  // steps through frames; onDone fires after the last frame (unless cancelled by wbPlayGen bump)
-  function wbRunFrames(made, frames, animClass, onDone, events, exact) {
-    const gen = ++wbPlayGen;
-    // playback clock: frame f fires at wall delay (f.t - lead), where lead trims dead air before the first move.
-    // exact mode (overdub) keeps the true timeline so replay and recording clocks line up 1:1.
-    const lead = exact ? 0 : (frames[1] ? Math.max(0, frames[1].t - 400) : 0);
-    if (events && events.length) {
-      events.forEach(e => {
-        setTimeout(() => {
-          if (gen !== wbPlayGen) return;
-          const t = made[e.id];
-          if (t) wbBubble(t, e.kind);
-        }, Math.max(50, e.t - lead));
-      });
-    }
-    let i = 1;
-    const step = () => {
-      if (gen !== wbPlayGen) return;
-      if (i >= frames.length) { if (onDone) onDone(); return; }
-      const f = frames[i++];
-      wbApplySnap(made, f.s, animClass);
-      const next = frames[i];
-      setTimeout(step, next ? Math.max(16, next.t - f.t) : 0);
+    const startWall = performance.now();
+    const dur = frames[frames.length-1].t;
+    const frame = (now) => {
+      if (!wbPlaying) return;
+      const t = now - startWall;
+      // interpolate between frames
+      let a = frames[0], b = frames[0];
+      for (let i=1;i<frames.length;i++){ if (t<=frames[i].t){ a=frames[i-1]; b=frames[i]; break; } b=frames[i]; a=frames[i-1]; }
+      const f = b.t>a.t ? (t-a.t)/(b.t-a.t) : 0;
+      Object.keys(b.s).forEach(id=>{ const tok=made[id]; if(tok&&a.s[id]){ tok.style.left=(a.s[id][0]+(b.s[id][0]-a.s[id][0])*f)+'%'; tok.style.top=(a.s[id][1]+(b.s[id][1]-a.s[id][1])*f)+'%'; } });
+      if (t<=dur+200) requestAnimationFrame(frame); else wbPlaying=false;
     };
-    setTimeout(step, exact ? (frames[1] ? Math.max(16, frames[1].t) : 400)
-                           : (frames[1] ? Math.min(frames[1].t, 400) : 400));
+    requestAnimationFrame(frame);
   }
 
-  function wbPlaySelected() {
-    const name = document.getElementById('wbPlaySel').value;
-    const play = wbPlays[name];
-    if (!play) { wbToast('No play selected'); return; }
-    if (wbPlaying || wbRec) return;
-    wbPlaying = true;
-    const frames = wbNormalizeFrames(play);
-    const made = wbBuildFromPlay(play, frames);
-    const animClass = play.v === 2 ? 'wb-live' : 'wb-anim';
-    wbRunFrames(made, frames, animClass, () => {
-      setTimeout(() => {
-        Object.values(made).forEach(t => { t.classList.remove('wb-live', 'wb-anim'); });
-        wbPlaying = false;
-      }, 300);
-    }, play.events || []);
-  }
-
-  // Overdub, two-phase: pressing the button ARMS it (board resets to the play's start, nothing
-  // moves). The moment you grab a token, the replay and the recording clock start together —
-  // your grab is t=0, so the new layer is synced to the old one automatically.
-  function wbOverdub() {
-    if (wbRec || wbPlaying) return;
-    if (wbArmed) {
-      wbArmed = null;
-      document.getElementById('wbDubBtn').classList.remove('rec-on');
-      wbToast('Overdub cancelled');
-      return;
-    }
-    const name = document.getElementById('wbPlaySel').value;
-    const play = wbPlays[name];
-    if (!play) { wbToast('Select a play to overdub'); return; }
-    const frames = wbNormalizeFrames(play);
-    const made = wbBuildFromPlay(play, frames);
-    wbArmed = { play, frames, made, name };
-    document.getElementById('wbDubBtn').classList.add('rec-on');
-    wbToast('Armed — grab a token to start');
-  }
-
-  function wbOverdubBegin() {
-    const a = wbArmed;
-    wbArmed = null;
-    wbDubbing = true;
-    wbPlaying = true;
-    document.getElementById('wbDubBtn').classList.remove('rec-on');
-    wbRec = { t0: Date.now(), frames: [{ t: 0, s: wbSnapshot() }], dubName: a.name,
-              events: (a.play.events || []).map(e => ({ t: e.t, id: e.id, kind: e.kind })) };
-    wbRec.timer = setInterval(() => {
-      const s = wbSnapshot();
-      const last = wbRec.frames[wbRec.frames.length - 1];
-      if (!wbSnapEq(s, last.s)) wbRec.frames.push({ t: Date.now() - wbRec.t0, s });
-    }, WB_SAMPLE_MS);
-    wbRunFrames(a.made, a.frames, 'wb-live', () => {
-      Object.values(a.made).forEach(t => t.classList.remove('wb-live'));
-      wbPlaying = false; // replay finished; recording continues until Stop so the layer can run longer
-    }, a.play.events || [], true);
-    wbUpdateRecBtn();
+  function wbStopPlay() {
+    wbPlaying = false;
+    if (wbRafId) { cancelAnimationFrame(wbRafId); wbRafId = null; }
   }
 
   function wbDeletePlay() {
-    if (wbRec || wbPlaying) return;
-    const name = document.getElementById('wbPlaySel').value;
+    if (wbTrackRec || wbPlaying) return;
+    const name = wbCurrentPlayName();
     if (!wbPlays[name]) { wbToast('No play selected'); return; }
     if (!confirm('Delete play "' + name + '"?')) return;
     delete wbPlays[name];
-    try { localStorage.setItem('bucketboard_wb_plays', JSON.stringify(wbPlays)); } catch (e) {}
+    wbPersist();
     wbRefreshPlayList();
+  }
+
+  // clear just the tracks of the selected play (keep the board), so you can re-record
+  function wbClearTracks() {
+    if (wbTrackRec || wbPlaying) return;
+    const name = wbCurrentPlayName();
+    const play = wbPlays[name];
+    if (!play || play.v !== 3) { wbToast('No recordable play selected'); return; }
+    if (!play.tracks.length) { wbToast('No tracks to clear'); return; }
+    if (!confirm('Erase all recorded motion in "' + name + '"?')) return;
+    play.tracks = []; wbPersist();
+    wbToast('Tracks cleared — re-record each player');
+  }
+
+  function wbNewPlay() {
+    if (wbTrackRec || wbPlaying) { wbToast('Finish the current action first'); return; }
+    const name = prompt('New play name:', 'Play ' + (Object.keys(wbPlays).length + 1));
+    if (!name) return;
+    if (wbPlays[name]) { wbToast('A play with that name exists'); wbRefreshPlayList(name); return; }
+    wbPlays[name] = { v: 3, tracks: [], tokens: [], events: [] };
+    wbPersist();
+    wbRefreshPlayList(name);
+    wbToast('New play "' + name + '" — record each player');
+  }
+
+  function wbUpdatePlayBtn() {
+    const b = document.getElementById('wbPlayBtn');
+    if (!b) return;
+    b.innerHTML = wbPlaying ? '&#9632; Stop' : '&#9654; Play';
+    b.classList.toggle('rec-on', wbPlaying);
+  }
+
+  function wbPlayOrStop() {
+    if (wbPlaying) { wbStopPlay(); wbUpdatePlayBtn(); return; }
+    wbPlaySelected();
+    wbUpdatePlayBtn();
+    // flip button back to Play when playback ends
+    const check = setInterval(() => { if (!wbPlaying) { wbUpdatePlayBtn(); clearInterval(check); } }, 200);
+  }
+
+  function wbOnPlayPick() {
+    // selecting a play could optionally load its starting formation; keep simple: just note count
+    const name = wbCurrentPlayName();
+    const play = wbPlays[name];
+    if (play && play.v === 3) wbToast(play.tracks.length ? (play.tracks.length + ' player track(s) recorded') : 'No motion yet — record players');
+  }
 
   // ─── LIVE SYNC (GitHub master/viewer) ───
   const LS_FILE = 'live-state.json';
@@ -4449,6 +4587,13 @@
   let lsLastHash = '';       // last pushed payload hash (master)
   let lsLastTs = 0;          // last applied snapshot ts (viewer)
   let lsBusy = false;
+
+  // ─── SUBS CHANNEL (viewer/slave can request substitutions; master applies them) ───
+  const LS_SUBS_FILE = 'live-subs.json';
+  let lsSubsSha = null;         // sha of live-subs.json (both sides read it; only viewer writes it)
+  let lsSubsLastAppliedTs = 0;  // master: last subs request timestamp it has applied
+  let lsSubsLastPushedFP = null; // viewer: fingerprint of onCourt set last pushed
+  let lsSubsBusy = false;
 
   function lsStatus(msg) {
     const el = document.getElementById('lsStatus');
@@ -4596,6 +4741,92 @@
     }
   }
 
+  // Bring exactly the given set of players (by number|name) onto the court, benching everyone
+  // else that's currently on. Mirrors toggleCourt/subPlayer's bookkeeping (courtStartTime,
+  // playSeconds, courtEntryScore) instead of blind field overwrite, so live timers stay correct.
+  function lsApplyTargetLineup(targetList) {
+    const key = p => p.number + '|' + p.name;
+    const targetKeys = new Set((targetList || []).map(t => t.number + '|' + t.name));
+    const outs = players.filter(p => p.onCourt && !targetKeys.has(key(p)));
+    outs.forEach(p => subPlayer(p.id, false));
+    const ins = players.filter(p => targetKeys.has(key(p)) && !p.onCourt);
+    ins.forEach(p => {
+      if (players.filter(x => x.onCourt).length >= 5) return; // safety cap
+      p.onCourt = true;
+      p.courtEntryScore = getTeamScore();
+      p.courtEntryOppScore = oppScore;
+      if (gameClockRunning) p.courtStartTime = now();
+    });
+    if (outs.length || ins.length) {
+      render();
+      const subsTab = document.getElementById('tab-subs');
+      if (typeof renderSubs === 'function' && subsTab && subsTab.classList.contains('active')) renderSubs();
+      lsStatus('Master: subs updated from Viewer ' + new Date().toLocaleTimeString());
+    }
+  }
+
+  // Viewer/slave: push its current on-court set so the master can pick up sub requests.
+  function lsSubsFingerprint() {
+    return players.filter(p => p.onCourt).map(p => p.number + '|' + p.name).sort().join(',');
+  }
+  async function lsPushSubs() {
+    if (lsSubsBusy) return;
+    const fp = lsSubsFingerprint();
+    if (fp === lsSubsLastPushedFP) return; // nothing changed locally
+    lsSubsBusy = true;
+    try {
+      const payload = { ts: Date.now(), onCourt: players.filter(p => p.onCourt).map(p => ({ number: p.number, name: p.name })) };
+      const body = JSON.stringify(payload);
+      const put = () => lsApi('/contents/' + LS_SUBS_FILE, {
+        method: 'PUT',
+        body: JSON.stringify({
+          message: 'subs request',
+          content: btoa(unescape(encodeURIComponent(body))),
+          branch: lsCfg.branch,
+          sha: lsSubsSha || undefined
+        })
+      });
+      let r = await put();
+      if (r.status === 404) { await lsEnsureBranch(); r = await put(); }
+      if (r.status === 409 || r.status === 422) {
+        const meta = await lsApi('/contents/' + LS_SUBS_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now());
+        if (meta.ok) lsSubsSha = (await meta.json()).sha;
+        r = await put();
+      }
+      if (!r.ok) throw new Error('subs push failed (' + r.status + ')');
+      lsSubsSha = (await r.json()).content.sha;
+      lsSubsLastPushedFP = fp;
+      lsStatus('Viewer: subs sent ' + new Date().toLocaleTimeString());
+    } catch (e) {
+      lsStatus('Viewer subs error: ' + e.message);
+    } finally {
+      lsSubsBusy = false;
+    }
+  }
+
+  // Master: poll for subs requests from the viewer and apply them.
+  async function lsPollSubs() {
+    if (lsSubsBusy) return;
+    lsSubsBusy = true;
+    try {
+      const r = await lsApi('/contents/' + LS_SUBS_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now());
+      if (r.status === 404) { lsSubsBusy = false; return; }
+      if (!r.ok) throw new Error('subs poll failed (' + r.status + ')');
+      const json = await r.json();
+      lsSubsSha = json.sha;
+      const text = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
+      const payload = JSON.parse(text);
+      if (payload.ts && payload.ts > lsSubsLastAppliedTs) {
+        lsSubsLastAppliedTs = payload.ts;
+        lsApplyTargetLineup(payload.onCourt);
+      }
+    } catch (e) {
+      console.warn('subs poll error', e);
+    } finally {
+      lsSubsBusy = false;
+    }
+  }
+
   function lsStop() {
     if (lsTimer) { clearInterval(lsTimer); lsTimer = null; }
     document.getElementById('lsViewerBadge').style.display = 'none';
@@ -4608,15 +4839,19 @@
     if (!lsCfg.branch) lsCfg.branch = 'live';
     if (lsCfg.mode === 'master') {
       lsLastHash = '';
+      lsSubsLastAppliedTs = 0;
       lsFetchSha().then(() => lsPush());
-      lsTimer = setInterval(lsPush, LS_INTERVAL);
-      lsStatus('Master: sync running');
+      lsPollSubs();
+      lsTimer = setInterval(() => { lsPush(); lsPollSubs(); }, LS_INTERVAL);
+      lsStatus('Master: sync running (accepting subs from Viewer)');
     } else {
       document.getElementById('lsViewerBadge').style.display = 'block';
       lsLastTs = 0;
+      lsSubsLastPushedFP = null;
       lsPoll();
-      lsTimer = setInterval(lsPoll, LS_INTERVAL);
-      lsStatus('Viewer: polling');
+      lsPushSubs();
+      lsTimer = setInterval(() => { lsPoll(); lsPushSubs(); }, LS_INTERVAL);
+      lsStatus('Viewer: polling (subs you make here sync to Master)');
     }
   }
 
@@ -4639,7 +4874,111 @@
     if (lsCfg.mode !== 'off') lsStart();
   })();
 
+  // ─── FULL DATA SYNC (GitHub — roster, saved games, settings, not just live state) ───
+  // Reuses lsCfg (owner/repo/token/branch) set up above for Live Sync.
+  const FS_FILE = 'bucketboard-data.json';
+  const FS_KEYS = [
+    'teamName', 'oppName', 'themeColor', 'bucketboard_theme_mode', 'customLogo',
+    'bucketboard_roster', 'bucketboard_clock_defaults', 'bucketboard_games',
+    'bucketboard_rot_presets', 'bucketboard_rotation',
+    'bucketboard_wb_plays', 'bucketboard_wb_default'
+  ];
+  const FS_SEEN_KEY = 'bucketboard_fs_lastSeenRemoteTs'; // newest remote timestamp we've already applied or pushed
+
+  function fsStatus(msg) {
+    const el = document.getElementById('fsStatus');
+    if (el) el.textContent = msg;
   }
+
+  function fsCollectBundle() {
+    const data = {};
+    FS_KEYS.forEach(k => {
+      const v = localStorage.getItem(k);
+      if (v !== null) data[k] = v;
+    });
+    return { updatedAt: Date.now(), data };
+  }
+
+  function fsApplyBundle(bundle) {
+    Object.keys(bundle.data).forEach(k => localStorage.setItem(k, bundle.data[k]));
+    localStorage.setItem(FS_SEEN_KEY, String(bundle.updatedAt));
+  }
+
+  async function fsFetchRemote() {
+    const r = await lsApi('/contents/' + FS_FILE + '?ref=' + (lsCfg.branch || 'live') + '&t=' + Date.now());
+    if (r.status === 404) return { exists: false, sha: null, bundle: null };
+    if (!r.ok) throw new Error('fetch failed (' + r.status + ')');
+    const json = await r.json();
+    const text = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
+    return { exists: true, sha: json.sha, bundle: JSON.parse(text) };
+  }
+
+  async function fsPushRemote(bundle, sha) {
+    const put = () => lsApi('/contents/' + FS_FILE, {
+      method: 'PUT',
+      body: JSON.stringify({
+        message: 'sync data',
+        content: btoa(unescape(encodeURIComponent(JSON.stringify(bundle)))),
+        branch: lsCfg.branch || 'live',
+        sha: sha || undefined
+      })
+    });
+    let r = await put();
+    if (r.status === 404) { await lsEnsureBranch(); r = await put(); }
+    if (r.status === 409 || r.status === 422) {
+      const fresh = await fsFetchRemote();
+      r = await lsApi('/contents/' + FS_FILE, {
+        method: 'PUT',
+        body: JSON.stringify({
+          message: 'sync data',
+          content: btoa(unescape(encodeURIComponent(JSON.stringify(bundle)))),
+          branch: lsCfg.branch || 'live',
+          sha: fresh.sha || undefined
+        })
+      });
+    }
+    if (!r.ok) throw new Error('push failed (' + r.status + ')');
+  }
+
+  async function fsSyncNow() {
+    if (!lsCfg.owner || !lsCfg.repo || !lsCfg.token) {
+      fsStatus('Fill in owner, repo, and token above (Live Sync section) first, then Apply Sync.');
+      return;
+    }
+    fsStatus('Syncing…');
+    try {
+      const remote = await fsFetchRemote();
+      const lastSeen = Number(localStorage.getItem(FS_SEEN_KEY) || 0);
+      if (remote.exists && remote.bundle.updatedAt > lastSeen) {
+        // someone else pushed newer data since we last synced this device — pull it in
+        fsApplyBundle(remote.bundle);
+        fsStatus('Pulled newer data from GitHub (' + new Date(remote.bundle.updatedAt).toLocaleString() + '). Reloading…');
+        setTimeout(() => location.reload(), 900);
+        return;
+      }
+      // we're the most recent — push local state up
+      const bundle = fsCollectBundle();
+      await fsPushRemote(bundle, remote.sha);
+      localStorage.setItem(FS_SEEN_KEY, String(bundle.updatedAt));
+      fsStatus('Synced — pushed local data ' + new Date(bundle.updatedAt).toLocaleTimeString());
+    } catch (e) {
+      fsStatus('Sync error: ' + e.message);
+    }
+  }
+
+  // On load, silently check (no push) whether newer data is waiting on GitHub, and nudge if so.
+  (async function fsCheckOnLoad() {
+    if (!lsCfg.owner || !lsCfg.repo || !lsCfg.token) return;
+    try {
+      const remote = await fsFetchRemote();
+      const lastSeen = Number(localStorage.getItem(FS_SEEN_KEY) || 0);
+      if (remote.exists && remote.bundle.updatedAt > lastSeen) {
+        fsStatus('Newer data available on GitHub — tap Sync Now to pull it in.');
+      } else {
+        fsStatus('Up to date as of last sync.');
+      }
+    } catch (e) { /* stay quiet on load errors */ }
+  })();
 
   wbRefreshPlayList();
 
