@@ -1825,6 +1825,7 @@
       <button class="btn-save-settings" style="flex:1;font-size:13px;" onclick="lsApply()">Apply Sync</button>
     </div>
     <div class="settings-hint" id="lsStatus" style="margin-top:6px;">Sync off</div>
+    <div class="settings-hint" id="lsDiag" style="margin-top:4px;font-family:'DM Mono',monospace;font-size:10px;opacity:.75;word-break:break-all;">—</div>
   </div>
 
   <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px;">
@@ -4614,6 +4615,10 @@
   // with 304 Not Modified, and 304s do not count against the API rate limit. Only real
   // changes cost quota, so a short interval is affordable.
   const LS_INTERVAL = 1500;
+  // Bump this whenever the file changes. Shown in Settings so it is possible to confirm at a
+  // glance that both devices are actually running the same code — browser and PWA caches
+  // can serve an old copy indefinitely, which looks identical to a bug that was never fixed.
+  const BUILD_ID = '20260802-2326';
 
   let lsCfg = { owner: '', repo: '', branch: 'live', token: '', mode: 'off' };
   try { Object.assign(lsCfg, JSON.parse(localStorage.getItem('bucketboard_livesync') || '{}')); } catch (e) {}
@@ -4645,7 +4650,22 @@
   function lsStatus(msg) {
     const el = document.getElementById('lsStatus');
     if (el) el.textContent = msg;
+    lsDiag();
   }
+
+  // A compact dump of what THIS device believes. Comparing the two screens side by side
+  // shows immediately whether a value failed to travel or never changed in the first place.
+  function lsDiag() {
+    const el = document.getElementById('lsDiag');
+    if (!el) return;
+    el.textContent =
+      'build ' + BUILD_ID + ' · dev ' + LS_DEVICE + ' · v' + lsSeenVer +
+      ' · opp ' + oppScore +
+      ' · clock ' + gameClockSeconds + (gameClockRunning ? ' RUN' : ' STOP') +
+      ' · setup ' + (clockSetupDone ? 'done' : 'no') +
+      ' · poll ' + (lsTimer ? (LS_INTERVAL + 'ms') : 'off');
+  }
+  setInterval(lsDiag, 1000);
   function lsBadge(show) {
     // NOTE: this element sits at the end of <body>, after this script. Always null-check.
     const el = document.getElementById('lsViewerBadge');
