@@ -5001,7 +5001,11 @@
       players: players.map(p => ({
         number: p.number, name: p.name, weight: p.weight, pos: p.pos,
         onCourt: p.onCourt, stats: p.stats, plusMinus: p.plusMinus,
-        quarterPts: p.quarterPts, playSeconds: p.playSeconds
+        quarterPts: p.quarterPts,
+        // Effective playing time: stored seconds PLUS the stint currently running. Sending
+        // the raw stored value meant the receiving device restarted the stint from zero on
+        // every sync, so playing time appeared to reset constantly.
+        playSeconds: (typeof playerLiveSeconds === 'function') ? playerLiveSeconds(p) : p.playSeconds
       })),
       gameClockSeconds, gameClockPrecise, gameClockRunning, currentQuarter,
       oppScore, oppFgm, oppFga,
@@ -5096,6 +5100,8 @@
         try { toggleGameClock(); } catch (e) {}
       }
     }
+    // The incoming playSeconds already includes the sender's in-progress stint, so the
+    // stint clock restarts from this moment without losing the time already banked.
     if (gameClockRunning) players.forEach(p => { if (p.onCourt) p.courtStartTime = now(); });
 
     // NOTE: the asset pull is deliberately NOT started here. It is awaited by lsTick after
