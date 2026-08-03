@@ -4605,6 +4605,7 @@
   let lsLastHash = null;       // hash of the state as of our last push/apply
   let lsLocalChangeAt = 0;     // when we first noticed local state differing from lsLastHash
   let lsLastKnownTs = 0;       // newest remote ts we have seen
+  let lsLastPushAt = 0;        // when we last published (drives the running-clock heartbeat)
 
   function lsStatus(msg) {
     const el = document.getElementById('lsStatus');
@@ -4767,25 +4768,48 @@
 
     currentQuarter = s.currentQuarter;
     oppScore = s.oppScore; oppFgm = s.oppFgm; oppFga = s.oppFga;
-    clockMode = s.clockMode; countdownFrom = s.countdownFrom; periodMode = s.periodMode;
+    countdownFrom = s.countdownFrom;
 
-    // Catch the clock up for however long the update spent in transit.
-    let secs = s.gameClockSeconds;
-    if (s.gameClockRunning && s.at) secs += Math.max(0, Math.floor((Date.now() - s.at) / 1000));
-    gameClockSeconds = secs;
+    // ─── Clock ───────────────────────────────────────────────────────────────────────
+    // toggleGameClock() recomputes gameClockSeconds from THIS device's own timing, so the
+    // order of these operations matters. Getting it backwards is why a stop on one device
+    // used to leave the other showing a permanently wrong time that never self-corrected.
+    const wantRunning = !!s.gameClockRunning;
+    let target = s.gameClockSeconds;
+    if (wantRunning && s.at) target += Math.max(0, Math.floor((Date.now() - s.at) / 1000));
 
-    // Match the other device's run/stop state using the app's own clock machinery, so
-    // intervals and per-player stint timers stay consistent.
-    if (!!s.gameClockRunning !== !!gameClockRunning) {
-      try { toggleGameClock(); } catch (e) {}
+    if (!wantRunning) {
+      // Stop first (that call overwrites the seconds), THEN pin the authoritative value.
+      if (gameClockRunning) { try { toggleGameClock(); } catch (e) {} }
+      gameClockSeconds = target;
+    } else {
+      if (!gameClockRunning) {
+        // Set the value first: starting the clock anchors its ticking to gameClockSeconds.
+        gameClockSeconds = target;
+        try { toggleGameClock(); } catch (e) {}
+      } else if (Math.abs(gameClockSeconds - target) >= 2) {
+        // Both running but drifted apart — re-anchor. Guarded by a 2s threshold so we
+        // aren't stopping/starting the clock on every poll over sub-second jitter.
+        try { toggleGameClock(); } catch (e) {}
+        gameClockSeconds = target;
+        try { toggleGameClock(); } catch (e) {}
+      }
     }
     if (gameClockRunning) players.forEach(p => { if (p.onCourt) p.courtStartTime = now(); });
 
     lsPullBrand(s.brandHash);
 
     try {
+      // Drive the clock's UI through the app's own setters, so the other device's control
+      // row actually matches — UP/DOWN highlighting, the minutes SET box, QUARTERS/HALVES
+      // label and the period pips. Setting the variables alone left these stale.
+      if (typeof setClockMode === 'function' && s.clockMode !== undefined) setClockMode(s.clockMode);
+      else clockMode = s.clockMode;
+      if (typeof setPeriodMode === 'function' && s.periodMode && s.periodMode !== periodMode) setPeriodMode(s.periodMode);
+      else periodMode = s.periodMode;
       const minEl = document.getElementById('clockSetMin');
       if (minEl) minEl.value = Math.round((countdownFrom || 480) / 60);
+      if (typeof renderQuarterPips === 'function') renderQuarterPips();
       updateClockDisplay();
       render();
       renderScoreTotal();
@@ -4856,6 +4880,11 @@
       const remoteTs = rs ? (rs.ts || 0) : 0;
       const remoteIsNew = remoteIsOthers && remoteTs > lsLastKnownTs;
 
+      // While the clock runs, nothing else may change for minutes, so there is nothing to
+      // push — and with no fresh snapshot the other device has no way to correct the drift
+      // between the two clocks. A periodic heartbeat republishes the time so it re-anchors.
+      const heartbeat = gameClockRunning && (Date.now() - lsLastPushAt > 12000);
+
       // Most recent change wins.
       if (remoteIsNew && (!locallyChanged || remoteTs > lsLocalChangeAt)) {
         lsApplySnapshot(rs);
@@ -4863,15 +4892,18 @@
         lsLastHash = lsStateHash(lsSnapshot());
         lsLocalChangeAt = 0;
         lsStatus('Updated from other device ' + new Date(remoteTs).toLocaleTimeString());
-      } else if (locallyChanged) {
+      } else if (locallyChanged || heartbeat) {
         await lsPushBrand();
         const out = lsSnapshot();
         out.ts = Date.now();
         await lsPushState(out);
         lsLastHash = lsStateHash(out);
         lsLastKnownTs = out.ts;
+        lsLastPushAt = Date.now();
         lsLocalChangeAt = 0;
-        lsStatus('Sent your changes ' + new Date(out.ts).toLocaleTimeString());
+        lsStatus(locallyChanged
+          ? 'Sent your changes ' + new Date(out.ts).toLocaleTimeString()
+          : 'Clock re-synced ' + new Date(out.ts).toLocaleTimeString());
       } else if (!rs) {
         // Nothing published yet — seed the shared file so the other device has something.
         await lsPushBrand();
@@ -4919,6 +4951,23 @@
 
   // Force an immediate push/pull rather than waiting for the next interval.
   function lsSyncNow() { lsTick(); }
+
+  // Any tap on a control kicks off a sync almost immediately, so a stop/sub/stat lands on
+  // the other device in a fraction of a second instead of waiting out the poll interval.
+  // Debounced, and capture-phase so it still fires for handlers that stop propagation.
+  let lsNudgeTimer = null;
+  function lsNudge(delay) {
+    if (lsCfg.mode === 'off' || !lsTimer) return;
+    if (lsNudgeTimer) clearTimeout(lsNudgeTimer);
+    lsNudgeTimer = setTimeout(() => { lsNudgeTimer = null; lsTick(); }, delay == null ? 200 : delay);
+  }
+  document.addEventListener('click', () => lsNudge(200), true);
+  document.addEventListener('change', () => lsNudge(200), true);
+  // The clock is the one control where a delay is most obvious — sync it on the spot.
+  if (typeof toggleGameClock === 'function') {
+    const _origToggleClock = toggleGameClock;
+    toggleGameClock = function () { const r = _origToggleClock.apply(this, arguments); lsNudge(0); return r; };
+  }
 
   // restore config into the settings fields and resume sync on load
   // ESCAPE HATCH: load the page with #nosync on the end of the URL to force sync off.
