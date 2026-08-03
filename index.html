@@ -5002,6 +5002,10 @@
         number: p.number, name: p.name, weight: p.weight, pos: p.pos,
         onCourt: p.onCourt, stats: p.stats, plusMinus: p.plusMinus,
         quarterPts: p.quarterPts,
+        // Subs & Minutes tab state. Staging was invisible on the other device because these
+        // never travelled, and a commit could be undone by a snapshot that predated it.
+        subsStaged: !!p.subsStaged,
+        subsStintStart: (p.subsStintStart == null ? null : p.subsStintStart),
         // Effective playing time: stored seconds PLUS the stint currently running. Sending
         // the raw stored value meant the receiving device restarted the stint from zero on
         // every sync, so playing time appeared to reset constantly.
@@ -5024,9 +5028,12 @@
     // stale snapshot back — which is what restarted the clock right after a pause.
     // Time-derived values are therefore excluded while running; when stopped they are
     // meaningful again and included.
-    const players = s.gameClockRunning
-      ? s.players.map(p => Object.assign({}, p, { playSeconds: null }))
-      : s.players;
+    // subsStintStart is stripped from the signature: renderSubs() sets it as a side effect
+    // of drawing, and treating that as a user edit would make the devices push endlessly.
+    const players = s.players.map(p => Object.assign({}, p, {
+      subsStintStart: null,
+      playSeconds: s.gameClockRunning ? null : p.playSeconds
+    }));
     const sig = {
       players: players, currentQuarter: s.currentQuarter,
       oppScore: s.oppScore, oppFgm: s.oppFgm, oppFga: s.oppFga,
@@ -5063,6 +5070,8 @@
         number: sp.number, name: sp.name, weight: sp.weight, pos: sp.pos,
         onCourt: sp.onCourt, stats: sp.stats, plusMinus: sp.plusMinus,
         quarterPts: sp.quarterPts, playSeconds: sp.playSeconds,
+        subsStaged: !!sp.subsStaged,
+        subsStintStart: (sp.subsStintStart === undefined ? p.subsStintStart : sp.subsStintStart),
         courtStartTime: null
       });
       seen.add(key(sp));
