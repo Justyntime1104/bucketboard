@@ -4610,7 +4610,10 @@
   // by the master's next push, which flipped it back, which re-sent it — an endless ping-pong.
   // With a single shared document and last-write-wins there is nothing to ping-pong against.
   const LS_FILE = 'live-state.json';
-  const LS_INTERVAL = 4000;
+  // Polling is fast because unchanged polls are FREE: GitHub answers a conditional request
+  // with 304 Not Modified, and 304s do not count against the API rate limit. Only real
+  // changes cost quota, so a short interval is affordable.
+  const LS_INTERVAL = 1500;
 
   let lsCfg = { owner: '', repo: '', branch: 'live', token: '', mode: 'off' };
   try { Object.assign(lsCfg, JSON.parse(localStorage.getItem('bucketboard_livesync') || '{}')); } catch (e) {}
@@ -4627,6 +4630,9 @@
   let lsTimer = null;
   let lsSha = null;            // sha of live-state.json, needed to update it
   let lsBusy = false;
+  let lsPending = false;      // a sync was requested while one was already running
+  let lsStateEtag = null;     // lets unchanged polls return a free 304
+  let lsLastRemote = null;    // last remote snapshot, reused when a poll returns 304
   let lsLastHash = null;       // hash of the state as of our last push/apply
   let lsLocalChangeAt = 0;     // when we first noticed local state differing from lsLastHash
   let lsLastKnownTs = 0;       // newest remote ts we have seen (display only)
@@ -4689,6 +4695,8 @@
                             'bucketboard_asset_meta', 'bucketboard_wakelock'];
 
   let lsShaCache = {};        // repo path -> sha, so updates don't need a lookup each time
+  let lsEtags = {};           // repo path -> etag, for free 304 responses
+  let lsBodyCache = {};       // repo path -> last body, reused when a fetch returns 304
   let lsManifestSha = null;
 
   function lsMetaLoad() { try { return JSON.parse(localStorage.getItem(LS_META_KEY) || '{}'); } catch (e) { return {}; } }
@@ -4773,9 +4781,16 @@
   }
 
   async function lsRepoGet(path, raw) {
+    // Conditional request: an unchanged file answers 304, which is free of rate limit and
+    // needs no download. This is what makes checking for new photos on every tap cheap.
+    const headers = {};
+    if (raw) headers['Accept'] = 'application/vnd.github.raw';
+    if (!raw && lsEtags[path]) headers['If-None-Match'] = lsEtags[path];
     const r = await lsApi('/contents/' + path + '?ref=' + lsCfg.branch + '&t=' + Date.now(),
-      raw ? { headers: { 'Accept': 'application/vnd.github.raw' } } : undefined);
-    if (r.status === 404) return null;
+      Object.keys(headers).length ? { headers } : undefined);
+    if (r.status === 304) return lsBodyCache[path] || null;
+    try { const et = r.headers && r.headers.get && r.headers.get('etag'); if (et && !raw) lsEtags[path] = et; } catch (e) {}
+    if (r.status === 404) { delete lsEtags[path]; delete lsBodyCache[path]; return null; }
     if (!r.ok) throw new Error(await lsErrText(r));
     if (raw) { const t = (await r.text()).trim(); return t || null; }
     const j = await r.json();
@@ -4783,7 +4798,9 @@
     let text = '';
     if (j.content && j.encoding === 'base64') text = decodeURIComponent(escape(atob(j.content.replace(/\s/g, ''))));
     else text = (await lsRepoGet(path, true)) || '';
-    return text.trim() || null;
+    const out = text.trim() || null;
+    lsBodyCache[path] = out;
+    return out;
   }
 
   async function lsRepoPut(path, text, message) {
@@ -4805,6 +4822,7 @@
     }
     if (!r.ok) throw new Error(await lsErrText(r));
     lsShaCache[path] = (await r.json()).content.sha;
+    delete lsEtags[path]; delete lsBodyCache[path];   // we changed it; validators are stale
   }
 
   // Pull only what changed, push only what changed.
@@ -5053,8 +5071,12 @@
   // ─── Fetch / push ────────────────────────────────────────────────────────────────────
   async function lsFetch() {
     const ref = '?ref=' + lsCfg.branch + '&t=' + Date.now();
-    const meta = await lsApi('/contents/' + LS_FILE + ref);
-    if (meta.status === 404) return { exists: false, sha: null, snap: null };
+    const meta = await lsApi('/contents/' + LS_FILE + ref,
+      lsStateEtag ? { headers: { 'If-None-Match': lsStateEtag } } : undefined);
+    // 304: nothing changed since our last look. Free (not rate limited) and needs no parsing.
+    if (meta.status === 304) return { exists: !!lsLastRemote, sha: lsSha, snap: lsLastRemote, notModified: true };
+    try { const et = meta.headers && meta.headers.get && meta.headers.get('etag'); if (et) lsStateEtag = et; } catch (e) {}
+    if (meta.status === 404) { lsStateEtag = null; lsLastRemote = null; return { exists: false, sha: null, snap: null }; }
     if (!meta.ok) throw new Error(await lsErrText(meta));
     const json = await meta.json();
     let text = '';
@@ -5071,6 +5093,7 @@
     let snap;
     try { snap = JSON.parse(text); }
     catch (e) { throw new Error('remote state unreadable — delete ' + LS_FILE + ' in the repo'); }
+    lsLastRemote = snap;
     return { exists: true, sha: json.sha, snap };
   }
 
@@ -5090,11 +5113,14 @@
     }
     if (!r.ok) throw new Error(await lsErrText(r));
     lsSha = (await r.json()).content.sha;
+    lsStateEtag = null;          // content changed; the cached validator is stale
   }
 
   // One cycle: see what the other device has, then publish anything newer of our own.
   async function lsTick() {
-    if (lsBusy) return;
+    // A button press while a sync is in flight used to be discarded here, which is why
+    // taps often appeared to do nothing. Remember it and run again immediately after.
+    if (lsBusy) { lsPending = true; return; }
     lsBusy = true;
     try {
       const remote = await lsFetch();
@@ -5132,7 +5158,6 @@
         lsLastHash = lsStateHash(lsSnapshot());
         lsLocalChangeAt = 0;
         lsStatus('Loaded current game from the other device');
-        lsBusy = false;
         return;
       }
       lsPrimed = true;
@@ -5190,6 +5215,7 @@
       lsStatus('Sync error: ' + e.message);
     } finally {
       lsBusy = false;
+      if (lsPending) { lsPending = false; setTimeout(lsTick, 0); }
     }
   }
 
@@ -5204,6 +5230,7 @@
     if (!lsCfg.owner || !lsCfg.repo || !lsCfg.token) { lsStatus('Fill in owner, repo, and token first'); return; }
     if (!lsCfg.branch) lsCfg.branch = 'live';
     lsLastHash = null; lsLocalChangeAt = 0; lsLastKnownTs = 0; lsSeenVer = 0; lsSha = null; lsPrimed = false;
+    lsStateEtag = null; lsLastRemote = null; lsPending = false;
     lsBadge(true);
     lsTick();
     lsTimer = setInterval(lsTick, LS_INTERVAL);
@@ -5291,10 +5318,10 @@
   function lsNudge(delay) {
     if (lsCfg.mode === 'off' || !lsTimer) return;
     if (lsNudgeTimer) clearTimeout(lsNudgeTimer);
-    lsNudgeTimer = setTimeout(() => { lsNudgeTimer = null; lsTick(); }, delay == null ? 200 : delay);
+    lsNudgeTimer = setTimeout(() => { lsNudgeTimer = null; lsTick(); }, delay == null ? 60 : delay);
   }
-  document.addEventListener('click', () => { lsAssetDirty = true; lsNudge(200); }, true);
-  document.addEventListener('change', () => { lsAssetDirty = true; lsNudge(200); }, true);
+  document.addEventListener('click', () => { lsAssetDirty = true; lsNudge(60); }, true);
+  document.addEventListener('change', () => { lsAssetDirty = true; lsNudge(60); }, true);
   // The clock is the one control where a delay is most obvious — sync it on the spot.
   if (typeof toggleGameClock === 'function') {
     const _origToggleClock = toggleGameClock;
