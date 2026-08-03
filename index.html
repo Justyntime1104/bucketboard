@@ -1828,6 +1828,13 @@
   </div>
 
   <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px;">
+    <div class="settings-label" style="margin-bottom:6px;">Keep Screen Awake</div>
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-bottom:6px;">
+      <input type="checkbox" id="wakeLockToggle" onchange="toggleWakeLock(this.checked)" style="width:18px;height:18px;">
+      <span style="font-size:14px;">Stop the screen sleeping during a game</span>
+    </label>
+    <div class="settings-hint" id="wakeLockStatus" style="margin-bottom:16px;">Screen may sleep normally</div>
+
     <div class="settings-label" style="margin-bottom:6px;">Sync Now</div>
     <div class="settings-hint" style="margin-bottom:8px;">Sync runs on its own every few seconds. This just forces an immediate check instead of waiting — handy right after you change the roster, team name or logo.</div>
     <button class="btn-save-settings" style="width:100%;" onclick="lsSyncNow()">🔄 Sync Now</button>
@@ -4606,6 +4613,8 @@
   let lsLocalChangeAt = 0;     // when we first noticed local state differing from lsLastHash
   let lsLastKnownTs = 0;       // newest remote ts we have seen
   let lsLastPushAt = 0;        // when we last published (drives the running-clock heartbeat)
+  let lsPrimed = false;        // has this device taken on the already-published state yet?
+  let lsAssetTick = 0;         // counts polls, to reconcile assets periodically
 
   function lsStatus(msg) {
     const el = document.getElementById('lsStatus');
@@ -4642,53 +4651,176 @@
   const LS_BRAND_KEYS = ['teamName', 'oppName', 'themeColor', 'bucketboard_theme_mode', 'customLogo'];
   let lsBrandSha = null, lsBrandLastPushed = null, lsBrandLastApplied = null;
 
+  // Everything the app keeps in browser storage travels in this file: team logo, player
+  // photos, roster, saved games, rotation presets, whiteboard plays, colours, names.
+  // Enumerated dynamically so anything added later syncs without further changes.
+  //
+  // NEVER sync these:
+  //   bucketboard_livesync  — holds the GitHub token. Committing it would publish the
+  //                           credential into the repo. Each device keeps its own copy.
+  //   bucketboard_device_id — must stay unique per device or they can't tell each other apart.
+  //   bucketboard_subs_sort — a local view preference, not shared data.
+  const LS_ASSET_EXCLUDE = ['bucketboard_livesync', 'bucketboard_device_id', 'bucketboard_subs_sort',
+                            'bucketboard_asset_meta', 'bucketboard_wakelock'];
+
   function lsBrandPayload() {
     const o = {};
-    LS_BRAND_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v !== null) o[k] = v; });
+    let keys = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k) keys.push(k); }
+    } catch (e) {}
+    if (!keys.length) keys = LS_BRAND_KEYS.slice();     // fallback if enumeration is unavailable
+    keys.sort().forEach(k => {
+      if (LS_ASSET_EXCLUDE.indexOf(k) !== -1) return;
+      const v = localStorage.getItem(k);
+      if (v !== null) o[k] = v;
+    });
     return o;
   }
   function lsBrandHash() { return lsHash(JSON.stringify(lsBrandPayload())); }
 
-  async function lsPushBrand() {
-    const hash = lsBrandHash();
-    if (hash === lsBrandLastPushed) return;      // unchanged: don't re-upload the logo image
-    try {
-      const body = JSON.stringify({ ts: Date.now(), hash, brand: lsBrandPayload() });
-      const put = () => lsApi('/contents/' + LS_BRAND_FILE, {
-        method: 'PUT',
-        body: JSON.stringify({
-          message: 'brand', content: btoa(unescape(encodeURIComponent(body))),
-          branch: lsCfg.branch, sha: lsBrandSha || undefined
-        })
-      });
-      let r = await put();
-      if (r.status === 404) { await lsEnsureBranch(); r = await put(); }
-      if (r.status === 409 || r.status === 422) {
-        const meta = await lsApi('/contents/' + LS_BRAND_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now());
-        if (meta.ok) lsBrandSha = (await meta.json()).sha;
-        r = await put();
-      }
-      if (!r.ok) throw new Error(await lsErrText(r));
-      lsBrandSha = (await r.json()).content.sha;
-      lsBrandLastPushed = hash;
-    } catch (e) { console.warn('brand push failed', e); }
+  // remoteBrandHash: what the shared state says is currently published. We must compare
+  // against that and not only against what WE last pushed — otherwise, if the other device
+  // overwrote the asset file with a sparser copy, we'd never notice and never restore ours.
+  // ─── ASSETS (logo, player photos, roster, saved games, presets, plays) ───────────────
+  // These are merged PER KEY, not replaced wholesale. Whole-file last-write-wins is wrong
+  // here: a device that happens to sync last but holds fewer photos would erase the other
+  // device's data. Instead every key carries the time it last changed, and the newer
+  // timestamp wins for that key alone. Deletions are recorded as tombstones so removing a
+  // photo still propagates instead of the photo simply reappearing from the other device.
+  const LS_META_KEY = 'bucketboard_asset_meta';
+
+  function lsMetaLoad() { try { return JSON.parse(localStorage.getItem(LS_META_KEY) || '{}'); } catch (e) { return {}; } }
+  function lsMetaSave(m) { try { localStorage.setItem(LS_META_KEY, JSON.stringify(m)); } catch (e) {} }
+
+  // Record local edits: stamp any key whose value changed, tombstone any that disappeared.
+  function lsAssetStamp() {
+    const cur = lsBrandPayload();
+    const meta = lsMetaLoad();
+    const t = Date.now();
+    Object.keys(cur).forEach(k => {
+      const h = lsHash(cur[k]);
+      if (!meta[k] || meta[k].deleted || meta[k].h !== h) meta[k] = { t, h };
+    });
+    Object.keys(meta).forEach(k => {
+      if (!(k in cur) && !meta[k].deleted) meta[k] = { t, deleted: true };
+    });
+    lsMetaSave(meta);
+    return { cur, meta };
   }
 
-  async function lsPullBrand(remoteHash) {
-    if (!remoteHash || remoteHash === lsBrandLastApplied || remoteHash === lsBrandHash()) return;
-    try {
-      const r = await lsApi('/contents/' + LS_BRAND_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now(),
-        { headers: { 'Accept': 'application/vnd.github.raw' } });
-      if (!r.ok) return;
-      const txt = (await r.text()).trim();
-      if (!txt) return;
-      const payload = JSON.parse(txt);
-      Object.keys(payload.brand || {}).forEach(k => localStorage.setItem(k, payload.brand[k]));
-      lsBrandLastApplied = payload.hash || remoteHash;
-      lsBrandLastPushed = lsBrandHash();
-      try { if (typeof applySettings === 'function') applySettings(); } catch (e) {}
-    } catch (e) { console.warn('brand pull failed', e); }
+  // Apply anything the other device changed more recently than we did. Returns true if our
+  // local storage actually changed, so callers know to refresh the UI.
+  function lsAssetMerge(remote) {
+    const { cur, meta } = lsAssetStamp();
+    const rmeta = (remote && remote.meta) || {};
+    const rdata = (remote && remote.data) || {};
+    let changed = false;
+    const keys = {};
+    Object.keys(meta).forEach(k => keys[k] = 1);
+    Object.keys(rmeta).forEach(k => keys[k] = 1);
+    Object.keys(keys).forEach(k => {
+      if (LS_ASSET_EXCLUDE.indexOf(k) !== -1 || k === LS_META_KEY) return;
+      const lm = meta[k], rm = rmeta[k];
+      if (!rm) return;                                  // they don't know about it; ours stands
+      if (lm && lm.t >= rm.t) return;                   // ours is the same age or newer
+      if (rm.deleted) {
+        if (k in cur) { try { localStorage.removeItem(k); } catch (e) {} changed = true; }
+        meta[k] = { t: rm.t, deleted: true };
+      } else if (k in rdata) {
+        try { localStorage.setItem(k, rdata[k]); changed = true; } catch (e) {
+          lsStatus('Device storage is full — could not save synced photos');
+        }
+        meta[k] = { t: rm.t, h: rm.h };
+      }
+    });
+    lsMetaSave(meta);
+    return changed;
   }
+
+  function lsAssetBody() {
+    const { cur, meta } = lsAssetStamp();
+    return JSON.stringify({ ts: Date.now(), meta, data: cur, hash: lsBrandHash() });
+  }
+
+  async function lsAssetFetch() {
+    const r = await lsApi('/contents/' + LS_BRAND_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now(),
+      { headers: { 'Accept': 'application/vnd.github.raw' } });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(await lsErrText(r));
+    const txt = (await r.text()).trim();
+    if (!txt) return null;
+    try { return JSON.parse(txt); } catch (e) { return null; }
+  }
+
+  async function lsAssetPut(body) {
+    const put = () => lsApi('/contents/' + LS_BRAND_FILE, {
+      method: 'PUT',
+      body: JSON.stringify({
+        message: 'assets', content: btoa(unescape(encodeURIComponent(body))),
+        branch: lsCfg.branch, sha: lsBrandSha || undefined
+      })
+    });
+    let r = await put();
+    if (r.status === 404) { await lsEnsureBranch(); lsBrandSha = null; r = await put(); }
+    if (r.status === 409 || r.status === 422) {
+      const meta = await lsApi('/contents/' + LS_BRAND_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now());
+      if (meta.ok) lsBrandSha = (await meta.json()).sha;
+      r = await put();
+    }
+    if (!r.ok) throw new Error(await lsErrText(r));
+    lsBrandSha = (await r.json()).content.sha;
+  }
+
+  // Full asset reconciliation: pull, merge, and push back if our merged view differs.
+  async function lsSyncAssets() {
+    try {
+      const remote = await lsAssetFetch();
+      const changedLocally = lsAssetMerge(remote);
+
+      if (changedLocally) {
+        // These are read into memory once at startup, so refresh the caches or new photos
+        // and plays won't show until a reload.
+        try { subsPics = JSON.parse(localStorage.getItem('bucketboard_player_pics') || '{}'); } catch (e) {}
+        try { wbPlays = JSON.parse(localStorage.getItem('bucketboard_wb_plays') || '{}'); } catch (e) {}
+        try { if (typeof applySettings === 'function') applySettings(); } catch (e) {}
+        try { if (typeof wbRefreshPlayList === 'function') wbRefreshPlayList(); } catch (e) {}
+        try {
+          const subsTab = document.getElementById('tab-subs');
+          if (typeof renderSubs === 'function' && subsTab && subsTab.classList.contains('active')) renderSubs();
+          if (typeof render === 'function') render();
+        } catch (e) {}
+      }
+
+      // Push if the remote is missing anything we hold, or holds an older version of it.
+      const { cur, meta } = lsAssetStamp();
+      const rmeta = (remote && remote.meta) || {};
+      let needsPush = !remote;
+      if (!needsPush) {
+        Object.keys(meta).forEach(k => {
+          const rm = rmeta[k];
+          if (!rm || meta[k].t > rm.t) needsPush = true;
+        });
+      }
+      if (needsPush) {
+        const body = lsAssetBody();
+        if (body.length > 6e6) {
+          lsStatus('Photos/logo total ' + Math.round(body.length / 1e6) + 'MB — syncing may be slow. Consider removing some player photos.');
+        }
+        await lsAssetPut(body);
+      }
+      lsBrandLastPushed = lsBrandHash();
+      return changedLocally;
+    } catch (e) {
+      console.warn('asset sync failed', e);
+      lsStatus('Photo/logo sync error: ' + e.message);
+      return false;
+    }
+  }
+
+  // Kept as thin wrappers so the rest of the sync loop reads the same as before.
+  async function lsPushBrand() { return lsSyncAssets(); }
+  async function lsPullBrand() { return lsSyncAssets(); }
 
   async function lsEnsureBranch() {
     let r = await lsApi('/git/ref/heads/' + lsCfg.branch);
@@ -4797,7 +4929,10 @@
     }
     if (gameClockRunning) players.forEach(p => { if (p.onCourt) p.courtStartTime = now(); });
 
-    lsPullBrand(s.brandHash);
+    // NOTE: the asset pull is deliberately NOT started here. It is awaited by lsTick after
+    // this returns, so our local hashes are recomputed only once the assets have landed.
+    // Firing it here un-awaited meant hashes were captured against stale data, and a device
+    // with no photos/logo would then "helpfully" publish its emptiness over the real thing.
 
     try {
       // Drive the clock's UI through the app's own setters, so the other device's control
@@ -4885,15 +5020,33 @@
       // between the two clocks. A periodic heartbeat republishes the time so it re-anchors.
       const heartbeat = gameClockRunning && (Date.now() - lsLastPushAt > 12000);
 
+      // A device that has just joined must take on what is already published before it is
+      // allowed to publish anything itself. Without this, opening the app on a device with
+      // an empty roster and no photos would immediately overwrite the other device's data.
+      if (!lsPrimed && rs) {
+        lsApplySnapshot(rs);
+        await lsSyncAssets();
+        lsPrimed = true;
+        lsLastKnownTs = remoteTs;
+        lsLastHash = lsStateHash(lsSnapshot());
+        lsBrandLastPushed = lsBrandHash();
+        lsLocalChangeAt = 0;
+        lsStatus('Loaded current game from the other device');
+        lsBusy = false;
+        return;
+      }
+      lsPrimed = true;
+
       // Most recent change wins.
       if (remoteIsNew && (!locallyChanged || remoteTs > lsLocalChangeAt)) {
         lsApplySnapshot(rs);
+        await lsSyncAssets();                 // awaited: hashes below must see the new assets
         lsLastKnownTs = remoteTs;
         lsLastHash = lsStateHash(lsSnapshot());
         lsLocalChangeAt = 0;
         lsStatus('Updated from other device ' + new Date(remoteTs).toLocaleTimeString());
       } else if (locallyChanged || heartbeat) {
-        await lsPushBrand();
+        await lsSyncAssets();
         const out = lsSnapshot();
         out.ts = Date.now();
         await lsPushState(out);
@@ -4906,13 +5059,19 @@
           : 'Clock re-synced ' + new Date(out.ts).toLocaleTimeString());
       } else if (!rs) {
         // Nothing published yet — seed the shared file so the other device has something.
-        await lsPushBrand();
+        await lsSyncAssets();
         const out = lsSnapshot();
         await lsPushState(out);
         lsLastHash = lsStateHash(out);
         lsLastKnownTs = out.ts;
         lsStatus('Published initial state');
       } else {
+        // State agrees. Assets can still be out of step (e.g. the other device published a
+        // sparser copy, or a photo was added while nothing else changed) — reconcile them.
+        // Reconcile assets periodically even when the game state is quiet — a photo may
+        // have been added on the other device without anything else changing.
+        lsAssetTick = (lsAssetTick + 1) % 5;
+        if (lsAssetTick === 0 || (rs && rs.brandHash && rs.brandHash !== lsBrandHash())) await lsSyncAssets();
         lsStatus('In sync · ' + new Date().toLocaleTimeString());
       }
     } catch (e) {
@@ -4932,7 +5091,7 @@
     if (lsCfg.mode === 'off') { lsStatus('Sync off'); return; }
     if (!lsCfg.owner || !lsCfg.repo || !lsCfg.token) { lsStatus('Fill in owner, repo, and token first'); return; }
     if (!lsCfg.branch) lsCfg.branch = 'live';
-    lsLastHash = null; lsLocalChangeAt = 0; lsLastKnownTs = 0; lsSha = null;
+    lsLastHash = null; lsLocalChangeAt = 0; lsLastKnownTs = 0; lsSha = null; lsPrimed = false;
     lsBadge(true);
     lsTick();
     lsTimer = setInterval(lsTick, LS_INTERVAL);
@@ -4951,6 +5110,67 @@
 
   // Force an immediate push/pull rather than waiting for the next interval.
   function lsSyncNow() { lsTick(); }
+
+  // ─── KEEP SCREEN AWAKE ────────────────────────────────────────────────────────────────
+  // Screen Wake Lock API. Supported in iOS/iPadOS Safari 16.4+, and in Chrome/Edge.
+  // The lock is dropped automatically whenever the tab is backgrounded or the device
+  // locks, so it has to be re-acquired when the page becomes visible again.
+  let wakeLockSentinel = null;
+  let wakeLockWanted = localStorage.getItem('bucketboard_wakelock') === '1';
+
+  function wakeLockSupported() { return 'wakeLock' in navigator; }
+
+  async function wakeLockAcquire() {
+    if (!wakeLockWanted || !wakeLockSupported() || document.visibilityState !== 'visible') return;
+    try {
+      wakeLockSentinel = await navigator.wakeLock.request('screen');
+      wakeLockSentinel.addEventListener('release', () => { wakeLockSentinel = null; });
+      wakeLockStatus('Screen will stay awake');
+    } catch (e) {
+      // Most common cause is a low-power-mode refusal, not a coding error.
+      wakeLockStatus('Could not keep screen awake: ' + (e && e.message ? e.message : e));
+    }
+  }
+  async function wakeLockRelease() {
+    try { if (wakeLockSentinel) await wakeLockSentinel.release(); } catch (e) {}
+    wakeLockSentinel = null;
+  }
+  function wakeLockStatus(msg) {
+    const el = document.getElementById('wakeLockStatus');
+    if (el) el.textContent = msg;
+  }
+  function toggleWakeLock(on) {
+    wakeLockWanted = !!on;
+    try { localStorage.setItem('bucketboard_wakelock', wakeLockWanted ? '1' : '0'); } catch (e) {}
+    if (wakeLockWanted) wakeLockAcquire();
+    else { wakeLockRelease(); wakeLockStatus('Screen may sleep normally'); }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && wakeLockWanted && !wakeLockSentinel) wakeLockAcquire();
+  });
+  (function wakeLockInit() {
+    const boot = () => {
+      const cb = document.getElementById('wakeLockToggle');
+      if (cb) cb.checked = wakeLockWanted;
+      if (!wakeLockSupported()) {
+        wakeLockStatus('Not supported by this browser — needs iPadOS 16.4 or newer. Fallback: Settings → Display & Brightness → Auto-Lock → Never.');
+        return;
+      }
+      // A wake lock can only be taken while the page is visible; also needs a user gesture
+      // on some versions, so the first tap on the page will pick it up if this call is refused.
+      if (wakeLockWanted) {
+        wakeLockAcquire();
+        document.addEventListener('click', function once() {
+          if (wakeLockWanted && !wakeLockSentinel) wakeLockAcquire();
+          document.removeEventListener('click', once);
+        }, { once: true });
+      } else {
+        wakeLockStatus('Screen may sleep normally');
+      }
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+  })();
 
   // Any tap on a control kicks off a sync almost immediately, so a stop/sub/stat lands on
   // the other device in a fraction of a second instead of waiting out the poll interval.
