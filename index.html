@@ -4672,7 +4672,13 @@
       let r = await put();
       if (r.status === 404) { await lsEnsureBranch(); await lsFetchSha(); r = await put(); }
       if (r.status === 409 || r.status === 422) { await lsFetchSha(); r = await put(); }
-      if (!r.ok) throw new Error('push failed (' + r.status + ')');
+      if (!r.ok) {
+        let detail = '';
+        try { detail = ' — ' + ((await r.json()).message || ''); } catch (e) {}
+        if (r.status === 403) detail += ' (token needs Contents: Read and write)';
+        if (r.status === 401) detail += ' (token invalid or expired)';
+        throw new Error('push failed (HTTP ' + r.status + ')' + detail);
+      }
       lsSha = (await r.json()).content.sha;
       lsLastHash = stableHash;
       lsStatus('Master: pushed ' + new Date().toLocaleTimeString());
@@ -4734,8 +4740,16 @@
       const r = await lsApi('/contents/' + LS_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now(), {
         headers: { 'Accept': 'application/vnd.github.raw+json' }
       });
-      if (!r.ok) throw new Error('poll failed (' + r.status + ')');
-      const s = JSON.parse(await r.text());
+      if (r.status === 404) { lsStatus('Viewer: waiting for Master to publish (no live-state.json on branch "' + lsCfg.branch + '" yet)'); lsBusy = false; return; }
+      if (!r.ok) {
+        let detail = '';
+        if (r.status === 401) detail = ' (token invalid or expired)';
+        if (r.status === 403) detail = ' (token lacks access to this repo)';
+        throw new Error('poll failed (HTTP ' + r.status + ')' + detail);
+      }
+      const raw = (await r.text()).trim();
+      if (!raw) { lsStatus('Viewer: live-state.json is empty, waiting for Master'); lsBusy = false; return; }
+      const s = JSON.parse(raw);
       if (s.ts && s.ts > lsLastTs) {
         lsLastTs = s.ts;
         lsApplySnapshot(s);
@@ -4834,9 +4848,17 @@
     }
   }
 
+  // NOTE: the #lsViewerBadge element lives at the very end of <body>, after this script block.
+  // At page-load time it does not exist yet, so every access must be null-safe — otherwise
+  // starting sync on load throws and kills the rest of the script (settings handlers, theme).
+  function lsBadge(show) {
+    const el = document.getElementById('lsViewerBadge');
+    if (el) el.style.display = show ? 'block' : 'none';
+  }
+
   function lsStop() {
     if (lsTimer) { clearInterval(lsTimer); lsTimer = null; }
-    document.getElementById('lsViewerBadge').style.display = 'none';
+    lsBadge(false);
   }
 
   function lsStart() {
@@ -4852,7 +4874,7 @@
       lsTimer = setInterval(() => { lsPush(); lsPollSubs(); }, LS_INTERVAL);
       lsStatus('Master: sync running (accepting subs from Viewer)');
     } else {
-      document.getElementById('lsViewerBadge').style.display = 'block';
+      lsBadge(true);
       lsLastTs = 0;
       lsSubsLastPushedFP = null;
       lsPoll();
@@ -4886,7 +4908,13 @@
       set('lsOwner', lsCfg.owner); set('lsRepo', lsCfg.repo);
       set('lsBranch', lsCfg.branch); set('lsToken', lsCfg.token);
       set('lsMode', lsCfg.mode);
-      if (lsCfg.mode !== 'off') lsStart();
+      // Defer until the whole document is parsed — this script block runs before the end of
+      // <body>, so elements like #lsViewerBadge don't exist yet.
+      if (lsCfg.mode !== 'off') {
+        const boot = () => { try { lsStart(); } catch (e) { console.error('lsStart failed', e); } };
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+        else boot();
+      }
     } catch (e) {
       // never let sync setup take the rest of the app down with it
       console.error('live sync init failed', e);
@@ -4925,12 +4953,39 @@
   }
 
   async function fsFetchRemote() {
-    const r = await lsApi('/contents/' + FS_FILE + '?ref=' + (lsCfg.branch || 'live') + '&t=' + Date.now());
-    if (r.status === 404) return { exists: false, sha: null, bundle: null };
-    if (!r.ok) throw new Error('fetch failed (' + r.status + ')');
-    const json = await r.json();
-    const text = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
-    return { exists: true, sha: json.sha, bundle: JSON.parse(text) };
+    const ref = '?ref=' + (lsCfg.branch || 'live') + '&t=' + Date.now();
+    // Metadata call: always gives us the sha, even when the file is too big to inline.
+    const meta = await lsApi('/contents/' + FS_FILE + ref);
+    if (meta.status === 404) return { exists: false, sha: null, bundle: null };
+    if (!meta.ok) throw new Error('fetch failed (HTTP ' + meta.status + ')');
+    const json = await meta.json();
+
+    // GitHub returns content:"" with encoding:"none" for files over ~1MB. Decoding that
+    // yields an empty string and JSON.parse then dies with "Unexpected EOF". Fall back to
+    // the raw endpoint, which streams the file regardless of size.
+    let text = '';
+    if (json.content && json.encoding === 'base64') {
+      text = decodeURIComponent(escape(atob(json.content.replace(/\s/g, ''))));
+    } else {
+      const raw = await lsApi('/contents/' + FS_FILE + ref, {
+        headers: { 'Accept': 'application/vnd.github.raw' }
+      });
+      if (!raw.ok) throw new Error('raw fetch failed (HTTP ' + raw.status + ')');
+      text = await raw.text();
+    }
+
+    text = (text || '').trim();
+    if (!text) return { exists: false, sha: json.sha, bundle: null }; // empty file — treat as no data
+    let bundle;
+    try {
+      bundle = JSON.parse(text);
+    } catch (e) {
+      throw new Error('remote data file is corrupt or unreadable — delete ' + FS_FILE + ' in the repo and sync again');
+    }
+    if (!bundle || typeof bundle.updatedAt !== 'number') {
+      throw new Error('remote data file has unexpected format');
+    }
+    return { exists: true, sha: json.sha, bundle };
   }
 
   async function fsPushRemote(bundle, sha) {
@@ -4957,7 +5012,13 @@
         })
       });
     }
-    if (!r.ok) throw new Error('push failed (' + r.status + ')');
+    if (!r.ok) {
+      let detail = '';
+      try { detail = ' — ' + ((await r.json()).message || ''); } catch (e) {}
+      if (r.status === 403) detail += ' (token needs Contents: Read and write on this repo)';
+      if (r.status === 401) detail += ' (token invalid or expired)';
+      throw new Error('push failed (HTTP ' + r.status + ')' + detail);
+    }
   }
 
   async function fsSyncNow() {
