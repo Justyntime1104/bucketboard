@@ -2155,6 +2155,11 @@
   // at 02:17.40 was transmitted as whole seconds and the other device rebuilt it as
   // 02:18.00 — the clock appearing to round up. This carries the exact instant instead.
   let gameClockPrecise = 0;
+  // Which device is authoritative for the running clock — whoever last pressed START/PAUSE.
+  // Without an owner both devices republish the time and each anchors to the other's
+  // slightly-stale value, so they chase each other and settle at a fixed offset instead of
+  // converging. The owner publishes; everyone else follows.
+  let clockOwner = null;
 
   // Sort state for box score and season tables
   let boxSortCol = 'pts';   let boxSortDir = -1;  // -1 = desc
@@ -3432,11 +3437,43 @@
   // ─── GAME CLOCK ───
   function toggleGameClock() {
     gameClockRunning = !gameClockRunning;
+    try { clockOwner = LS_DEVICE; } catch (e) {}
     const btn = document.getElementById('btnGameClock');
     if (gameClockRunning) {
       btn.textContent = 'PAUSE'; btn.classList.add('running');
       if (clockMode === 'down') {
-        const startSec = gameClockSeconds;
+        clockStartTicker();
+      } else {
+        gameClockInterval = setInterval(() => {
+          gameClockSeconds++;
+          gameClockPrecise = gameClockSeconds;
+          updateClockDisplay();
+        }, 1000);
+      }
+      rotAutoloadLineup();
+      players.forEach(p => { if (p.onCourt) p.courtStartTime = now(); });
+    } else {
+      btn.textContent = gameClockSeconds === 0 ? 'START' : 'RESUME';
+      btn.classList.remove('running');
+      if(gameClockInterval){if(gameClockInterval.clear)gameClockInterval.clear();else clearInterval(gameClockInterval);gameClockInterval=null;};
+      players.forEach(p => {
+        if (p.onCourt && p.courtStartTime) {
+          p.playSeconds += Math.floor((now() - p.courtStartTime) / 1000);
+          p.courtStartTime = null;
+        }
+      });
+      renderClockPrecise();      // freeze on the exact instant PAUSE was pressed
+    }
+  }
+
+  // The countdown ticker, split out so the clock can be re-anchored to the other device
+  // WITHOUT going through toggleGameClock() — that would bank playSeconds and restart every
+  // player's stint, which is not something a clock correction should ever do.
+  // Bases off gameClockPrecise, so restarting keeps the fractional part.
+  function clockStartTicker() {
+    if (gameClockInterval) { if (gameClockInterval.clear) gameClockInterval.clear(); else clearInterval(gameClockInterval); gameClockInterval = null; }
+    {
+        const startSec = gameClockPrecise;
         const startWall = performance.now();
         let _rafId;
         const _tick = () => {
@@ -3469,27 +3506,15 @@
         };
         _rafId = requestAnimationFrame(_tick);
         gameClockInterval = { clear: () => cancelAnimationFrame(_rafId) };
-      } else {
-        gameClockInterval = setInterval(() => {
-          gameClockSeconds++;
-          gameClockPrecise = gameClockSeconds;
-          updateClockDisplay();
-        }, 1000);
-      }
-      rotAutoloadLineup();
-      players.forEach(p => { if (p.onCourt) p.courtStartTime = now(); });
-    } else {
-      btn.textContent = gameClockSeconds === 0 ? 'START' : 'RESUME';
-      btn.classList.remove('running');
-      if(gameClockInterval){if(gameClockInterval.clear)gameClockInterval.clear();else clearInterval(gameClockInterval);gameClockInterval=null;};
-      players.forEach(p => {
-        if (p.onCourt && p.courtStartTime) {
-          p.playSeconds += Math.floor((now() - p.courtStartTime) / 1000);
-          p.courtStartTime = null;
-        }
-      });
-      renderClockPrecise();      // freeze on the exact instant PAUSE was pressed
     }
+  }
+
+  // Snap the running clock to a value from the other device, keeping player stints intact.
+  function clockReanchor(preciseSeconds) {
+    gameClockPrecise = Math.max(0, preciseSeconds);
+    gameClockSeconds = Math.min(Math.floor(gameClockPrecise), countdownFrom);
+    if (!gameClockRunning) { renderClockPrecise(); return; }
+    if (clockMode === 'down') clockStartTicker(); else updateClockDisplay();
   }
 
   function resetGameClock(suppressReminder) {
@@ -4670,6 +4695,9 @@
   let lsPending = false;      // a sync was requested while one was already running
   let lsStateEtag = null;     // lets unchanged polls return a free 304
   let lsLastRemote = null;    // last remote snapshot, reused when a poll returns 304
+  let lsLatency = 0;          // measured one-way transit, ms
+  let lsPrevPollAt = 0;       // when the previous poll finished
+  let lsSnapAge = 0;          // estimated age of the snapshot we just fetched, ms
   let lsLastHash = null;       // hash of the state as of our last push/apply
   let lsLocalChangeAt = 0;     // when we first noticed local state differing from lsLastHash
   let lsLastKnownTs = 0;       // newest remote ts we have seen (display only)
@@ -4678,6 +4706,7 @@
   let lsPrimed = false;        // has this device taken on the already-published state yet?
   let lsAssetTick = 0;         // counts polls, to reconcile assets periodically
   let lsAssetDirty = false;    // a tap happened: a photo or logo may have just changed
+  let lsForcePush = false;     // publish on the next tick even if no value changed
 
   function lsStatus(msg) {
     const el = document.getElementById('lsStatus');
@@ -5013,7 +5042,7 @@
       })),
       gameClockSeconds, gameClockPrecise, gameClockRunning, currentQuarter,
       oppScore, oppFgm, oppFga,
-      clockMode, countdownFrom, periodMode, clockSetupDone,
+      clockMode, countdownFrom, periodMode, clockSetupDone, clockOwner,
       brandHash: lsBrandHash()
     };
   }
@@ -5086,9 +5115,22 @@
     // toggleGameClock() recomputes gameClockSeconds from THIS device's own timing, so the
     // order of these operations matters. Getting it backwards is why a stop on one device
     // used to leave the other showing a permanently wrong time that never self-corrected.
+    // Track who owns the clock, then decide whether to take their time or keep ours.
+    // NOTE: this must be re-applied AFTER the clock block below, because starting or
+    // stopping the clock there goes through toggleGameClock(), which claims ownership for
+    // this device. A follower doing that would seize the clock from the device actually
+    // running the game, and the two would then fight over the time.
+    const incomingOwner = s.clockOwner;
+    if (incomingOwner !== undefined) clockOwner = incomingOwner;
+    const theyOwnClock = !incomingOwner || incomingOwner !== LS_DEVICE;
+
     const wantRunning = !!s.gameClockRunning;
-    let target = s.gameClockSeconds;
-    if (wantRunning && s.at) target += Math.max(0, Math.floor((Date.now() - s.at) / 1000));
+    // Work in the fractional value, and add only the locally-measured transit. The old code
+    // did (Date.now() - s.at), mixing this device's clock with the sender's — any skew
+    // between the two went straight into the clock, pushing them apart rather than together.
+    let targetPrecise = (typeof s.gameClockPrecise === 'number') ? s.gameClockPrecise : s.gameClockSeconds;
+    if (wantRunning) targetPrecise += (lsLatency + lsSnapAge) / 1000;
+    let target = Math.min(Math.floor(targetPrecise), countdownFrom || Infinity);
 
     if (!wantRunning) {
       // Stop first (that call overwrites the seconds), THEN pin the authoritative value.
@@ -5098,17 +5140,18 @@
       gameClockPrecise = (typeof s.gameClockPrecise === 'number') ? s.gameClockPrecise : target;
     } else {
       if (!gameClockRunning) {
-        // Set the value first: starting the clock anchors its ticking to gameClockSeconds.
+        gameClockPrecise = targetPrecise;
         gameClockSeconds = target;
-        try { toggleGameClock(); } catch (e) {}
-        gameClockPrecise = (typeof s.gameClockPrecise === 'number') ? s.gameClockPrecise : target;
-      } else if (Math.abs(gameClockSeconds - target) >= 1) {
-        // Both running but drifted apart — re-anchor to the sender's time.
-        try { toggleGameClock(); } catch (e) {}
-        gameClockSeconds = target;
-        try { toggleGameClock(); } catch (e) {}
+        try { toggleGameClock(); } catch (e) {}   // starts from gameClockPrecise
+      } else if (theyOwnClock && Math.abs(gameClockPrecise - targetPrecise) >= 1.5) {
+        // Both running but drifted — snap to the sender's time. clockReanchor restarts only
+        // the ticker, leaving player stint timers untouched.
+        try { clockReanchor(targetPrecise); } catch (e) {}
       }
     }
+    // Restore ownership: the toggleGameClock() calls above will have claimed it for us.
+    if (incomingOwner !== undefined) clockOwner = incomingOwner;
+
     // The incoming playSeconds already includes the sender's in-progress stint, so the
     // stint clock restarts from this moment without losing the time already banked.
     if (gameClockRunning) players.forEach(p => { if (p.onCourt) p.courtStartTime = now(); });
@@ -5151,11 +5194,12 @@
 
   // ─── Fetch / push ────────────────────────────────────────────────────────────────────
   async function lsFetch() {
+    const _t0 = Date.now();
     const ref = '?ref=' + lsCfg.branch + '&t=' + Date.now();
     const meta = await lsApi('/contents/' + LS_FILE + ref,
       lsStateEtag ? { headers: { 'If-None-Match': lsStateEtag } } : undefined);
     // 304: nothing changed since our last look. Free (not rate limited) and needs no parsing.
-    if (meta.status === 304) return { exists: !!lsLastRemote, sha: lsSha, snap: lsLastRemote, notModified: true };
+    if (meta.status === 304) { lsPrevPollAt = Date.now(); return { exists: !!lsLastRemote, sha: lsSha, snap: lsLastRemote, notModified: true }; }
     try { const et = meta.headers && meta.headers.get && meta.headers.get('etag'); if (et) lsStateEtag = et; } catch (e) {}
     if (meta.status === 404) { lsStateEtag = null; lsLastRemote = null; return { exists: false, sha: null, snap: null }; }
     if (!meta.ok) throw new Error(await lsErrText(meta));
@@ -5170,10 +5214,19 @@
       text = await raw.text();
     }
     text = (text || '').trim();
+    lsPrevPollAt = Date.now();
     if (!text) return { exists: false, sha: json.sha, snap: null };
     let snap;
     try { snap = JSON.parse(text); }
     catch (e) { throw new Error('remote state unreadable — delete ' + LS_FILE + ' in the repo'); }
+    // One-way transit, estimated as half the round trip. Measured entirely on THIS device,
+    // so it is immune to the two devices' clocks disagreeing.
+    lsLatency = Math.min(5000, Math.max(0, (Date.now() - _t0) / 2));
+    // How stale is this snapshot? Because every poll is conditional, seeing changed content
+    // means the push landed somewhere between the previous poll and this one — so its age
+    // averages half that gap. Without this the clock was always behind by the poll gap.
+    const gap = lsPrevPollAt ? (Date.now() - lsPrevPollAt) : LS_INTERVAL;
+    lsSnapAge = Math.min(10000, Math.max(0, gap / 2));
     lsLastRemote = snap;
     return { exists: true, sha: json.sha, snap };
   }
@@ -5225,7 +5278,13 @@
       // While the clock runs, nothing else may change for minutes, so there is nothing to
       // push — and with no fresh snapshot the other device has no way to correct the drift
       // between the two clocks. A periodic heartbeat republishes the time so it re-anchors.
-      const heartbeat = gameClockRunning && (Date.now() - lsLastPushAt > 12000);
+      // While running, republish on a short cycle so the clocks re-align on ordinary polls
+      // as well as on taps.
+      // Only the clock's owner republishes it. A follower echoing its own drifting copy is
+      // what made the two settle at a constant offset rather than converging.
+      const ownsClock = !clockOwner || clockOwner === LS_DEVICE;
+      const heartbeat = gameClockRunning && ownsClock && (Date.now() - lsLastPushAt > 3000);
+      const forced = lsForcePush; lsForcePush = false;
 
       // A device that has just joined must take on what is already published before it is
       // allowed to publish anything itself. Without this, opening the app on a device with
@@ -5253,7 +5312,7 @@
         lsLastHash = lsStateHash(lsSnapshot());
         lsLocalChangeAt = 0;
         lsStatus('Updated from other device ' + new Date(remoteTs).toLocaleTimeString());
-      } else if (locallyChanged || heartbeat) {
+      } else if (locallyChanged || heartbeat || forced) {
         await lsSyncAssets();
         const out = lsSnapshot();
         out.ts = Date.now();
@@ -5311,7 +5370,7 @@
     if (!lsCfg.owner || !lsCfg.repo || !lsCfg.token) { lsStatus('Fill in owner, repo, and token first'); return; }
     if (!lsCfg.branch) lsCfg.branch = 'live';
     lsLastHash = null; lsLocalChangeAt = 0; lsLastKnownTs = 0; lsSeenVer = 0; lsSha = null; lsPrimed = false;
-    lsStateEtag = null; lsLastRemote = null; lsPending = false;
+    lsStateEtag = null; lsLastRemote = null; lsPending = false; lsForcePush = false;
     lsBadge(true);
     lsTick();
     lsTimer = setInterval(lsTick, LS_INTERVAL);
@@ -5398,11 +5457,19 @@
   let lsNudgeTimer = null;
   function lsNudge(delay) {
     if (lsCfg.mode === 'off' || !lsTimer) return;
+    // Publish on this tick regardless of whether a value changed. While the clock runs its
+    // seconds are excluded from change detection (they move on their own), so a tap would
+    // otherwise push nothing and the other device would have no new time to align to.
+    lsForcePush = true;
     if (lsNudgeTimer) clearTimeout(lsNudgeTimer);
     lsNudgeTimer = setTimeout(() => { lsNudgeTimer = null; lsTick(); }, delay == null ? 60 : delay);
   }
   document.addEventListener('click', () => { lsAssetDirty = true; lsNudge(60); }, true);
   document.addEventListener('change', () => { lsAssetDirty = true; lsNudge(60); }, true);
+  // Safari on iOS can swallow a click when a handler re-renders the element under the
+  // finger, so listen for the touch as well. The debounce keeps this from double-firing.
+  document.addEventListener('touchend', () => { lsAssetDirty = true; lsNudge(60); }, true);
+  document.addEventListener('pointerup', () => { lsAssetDirty = true; lsNudge(60); }, true);
   // The clock is the one control where a delay is most obvious — sync it on the spot.
   if (typeof toggleGameClock === 'function') {
     const _origToggleClock = toggleGameClock;
