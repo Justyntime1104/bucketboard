@@ -2868,6 +2868,15 @@
     const seg = rotCurrentSeg();
     if (seg < 0 || !rotation.grid[seg] || !rotation.grid[seg].length) return;
     const nums = rotation.grid[seg].slice(0, 5);
+
+    // Don't overrule a lineup the user has just picked by hand. Pressing START used to
+    // silently replace the five on court with whatever the saved rotation plan said — so a
+    // plan holding only two players emptied the court. Only autoload when no full lineup is
+    // set, and never load a short segment that would leave the team undermanned.
+    const onCourtNow = players.filter(p => p.onCourt).length;
+    const wantSize = Math.min(5, players.filter(p => p.stats.fouls < 5).length);
+    if (onCourtNow >= wantSize) return;          // a lineup is already set — leave it alone
+    if (nums.length < wantSize) return;          // partial plan: would bench players for nothing
     let changed = false;
     players.forEach(p => {
       const want = nums.includes(p.number) && p.stats.fouls < 5;
