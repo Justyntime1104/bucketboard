@@ -2151,6 +2151,10 @@
   // This used to live only in the DOM, which is why the other device kept showing the
   // setup controls no matter what was synced.
   let clockSetupDone = false;
+  // Fractional elapsed seconds. gameClockSeconds only holds Math.floor(elapsed), so a pause
+  // at 02:17.40 was transmitted as whole seconds and the other device rebuilt it as
+  // 02:18.00 — the clock appearing to round up. This carries the exact instant instead.
+  let gameClockPrecise = 0;
 
   // Sort state for box score and season tables
   let boxSortCol = 'pts';   let boxSortDir = -1;  // -1 = desc
@@ -2326,6 +2330,7 @@
     gameClockRunning = false;
     if(gameClockInterval){if(gameClockInterval.clear)gameClockInterval.clear();else clearInterval(gameClockInterval);gameClockInterval=null;}
     gameClockSeconds = 0;
+    gameClockPrecise = 0;
     document.getElementById('btnGameClock').textContent = 'START';
     document.getElementById('btnGameClock').classList.remove('running');
     document.getElementById('oppScore').textContent = '0';
@@ -3431,6 +3436,7 @@
           const totalElapsed = startSec + elapsed;
           const remaining = Math.max(0, countdownFrom - totalElapsed);
           gameClockSeconds = Math.min(Math.floor(totalElapsed), countdownFrom);
+          gameClockPrecise = Math.min(totalElapsed, countdownFrom);
           const m = String(Math.floor(remaining / 60)).padStart(2,'0');
           const s = String(Math.floor(remaining % 60)).padStart(2,'0');
           const h = String(Math.floor((remaining * 100) % 100)).padStart(2,'0');
@@ -3457,6 +3463,7 @@
       } else {
         gameClockInterval = setInterval(() => {
           gameClockSeconds++;
+          gameClockPrecise = gameClockSeconds;
           updateClockDisplay();
         }, 1000);
       }
@@ -3472,6 +3479,7 @@
           p.courtStartTime = null;
         }
       });
+      renderClockPrecise();      // freeze on the exact instant PAUSE was pressed
     }
   }
 
@@ -3480,6 +3488,7 @@
     gameClockRunning = false;
     if(gameClockInterval){if(gameClockInterval.clear)gameClockInterval.clear();else clearInterval(gameClockInterval);gameClockInterval=null;};
     gameClockSeconds = 0;
+    gameClockPrecise = 0;
     document.getElementById('btnGameClock').textContent = 'START';
     document.getElementById('btnGameClock').classList.remove('running');
     players.forEach(p => { p.courtStartTime = null; });
@@ -3526,6 +3535,20 @@
       homeEl.classList.add('losing'); homeLbl && homeLbl.classList.add('losing');
       if (oppWm) oppWm.classList.add('winning');
     }
+  }
+
+  // Draws the clock from the fractional value, so a paused clock reads identically on both
+  // devices instead of one showing 02:17.40 and the other 02:18.00.
+  function renderClockPrecise() {
+    if (clockMode !== 'down') { updateClockDisplay(); return; }
+    const remaining = Math.max(0, countdownFrom - gameClockPrecise);
+    const el = document.getElementById('gameClock');
+    if (!el) return;
+    el.textContent = String(Math.floor(remaining / 60)).padStart(2,'0') + ':' +
+                     String(Math.floor(remaining % 60)).padStart(2,'0') + '.' +
+                     String(Math.floor((remaining * 100) % 100)).padStart(2,'0');
+    const warn = remaining < 60 && remaining > 0;
+    el.classList.toggle('countdown-warn', warn);
   }
 
   function updateClockDisplay(hundredths) {
@@ -4971,7 +4994,7 @@
         onCourt: p.onCourt, stats: p.stats, plusMinus: p.plusMinus,
         quarterPts: p.quarterPts, playSeconds: p.playSeconds
       })),
-      gameClockSeconds, gameClockRunning, currentQuarter,
+      gameClockSeconds, gameClockPrecise, gameClockRunning, currentQuarter,
       oppScore, oppFgm, oppFga,
       clockMode, countdownFrom, periodMode, clockSetupDone,
       brandHash: lsBrandHash()
@@ -4997,7 +5020,8 @@
       clockMode: s.clockMode, countdownFrom: s.countdownFrom, periodMode: s.periodMode,
       clockSetupDone: s.clockSetupDone,
       gameClockRunning: s.gameClockRunning,
-      gameClockSeconds: s.gameClockRunning ? null : s.gameClockSeconds
+      gameClockSeconds: s.gameClockRunning ? null : s.gameClockSeconds,
+      gameClockPrecise: s.gameClockRunning ? null : Math.round((s.gameClockPrecise || 0) * 100)
       // brandHash is deliberately NOT part of this signature. Photos and logos carry their
       // own per-unit versions. Including it meant that merely RECEIVING a photo changed
       // this device's signature, so it believed the user had edited the game and
@@ -5048,11 +5072,14 @@
       // Stop first (that call overwrites the seconds), THEN pin the authoritative value.
       if (gameClockRunning) { try { toggleGameClock(); } catch (e) {} }
       gameClockSeconds = target;
+      // Use the sender's exact fractional instant so both read the same to the hundredth.
+      gameClockPrecise = (typeof s.gameClockPrecise === 'number') ? s.gameClockPrecise : target;
     } else {
       if (!gameClockRunning) {
         // Set the value first: starting the clock anchors its ticking to gameClockSeconds.
         gameClockSeconds = target;
         try { toggleGameClock(); } catch (e) {}
+        gameClockPrecise = (typeof s.gameClockPrecise === 'number') ? s.gameClockPrecise : target;
       } else if (Math.abs(gameClockSeconds - target) >= 1) {
         // Both running but drifted apart — re-anchor to the sender's time.
         try { toggleGameClock(); } catch (e) {}
@@ -5080,9 +5107,19 @@
       const minEl = document.getElementById('clockSetMin');
       if (minEl) minEl.value = Math.round((countdownFrom || 480) / 60);
       if (typeof renderQuarterPips === 'function') renderQuarterPips();
-      updateClockDisplay();
+
+      // The opponent score element is only written by the +1/+2/+3 handlers, so a synced
+      // score never appeared on the receiving device. renderScoreTotal() also READS this
+      // element, so it must be refreshed before that runs or the stale value feeds back in.
+      const oppEl = document.getElementById('oppScore');
+      if (oppEl) oppEl.textContent = oppScore;
+      const oppPct = document.getElementById('oppFgPct');
+      if (oppPct) oppPct.textContent = oppFga > 0 ? Math.round(oppFgm / oppFga * 100) + '%' : '-';
+
+      if (gameClockRunning) updateClockDisplay(); else renderClockPrecise();
       render();
       renderScoreTotal();
+      try { if (typeof updateScoreGlow === 'function') updateScoreGlow(); } catch (e) {}
       const subsTab = document.getElementById('tab-subs');
       if (typeof renderSubs === 'function' && subsTab && subsTab.classList.contains('active')) renderSubs();
     } catch (e) {}
