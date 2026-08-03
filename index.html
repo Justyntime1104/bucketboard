@@ -2146,6 +2146,10 @@
   let clockMode = 'up';          // 'up' | 'down'
   let countdownFrom = 8 * 60;    // seconds
   let periodMode = 'quarters';   // 'quarters' | 'halves'
+  // True once SET has been pressed: the minutes box and UP/DOWN choosers get hidden.
+  // This used to live only in the DOM, which is why the other device kept showing the
+  // setup controls no matter what was synced.
+  let clockSetupDone = false;
 
   // Sort state for box score and season tables
   let boxSortCol = 'pts';   let boxSortDir = -1;  // -1 = desc
@@ -2200,8 +2204,7 @@
     clockMode = mode;
     document.getElementById('btnCountUp').classList.toggle('active', mode === 'up');
     document.getElementById('btnCountDown').classList.toggle('active', mode === 'down');
-    document.getElementById('clockSetWrap').style.display = mode === 'down' ? 'flex' : 'none';
-    // Reset clockSetWrap visibility when switching back to down
+    applyClockSetupUI();
 
     updateClockDisplay();
   }
@@ -3362,15 +3365,32 @@
     inp.value = Math.max(1, Math.min(60, parseInt(inp.value||8) + delta));
   }
 
+  // Renders the clock setup controls from clockSetupDone + clockMode. Both devices call
+  // this, so the second screen matches the one the clock was configured on.
+  function applyClockSetupUI() {
+    const wrap = document.getElementById('clockSetWrap');
+    const up   = document.getElementById('btnCountUp');
+    const down = document.getElementById('btnCountDown');
+    const sep  = document.getElementById('clockDirSep');
+    if (clockSetupDone) {
+      if (wrap) wrap.style.display = 'none';
+      if (up)   up.style.display = 'none';
+      if (down) down.style.display = 'none';
+      if (sep)  sep.style.display = 'none';
+    } else {
+      if (wrap) wrap.style.display = clockMode === 'down' ? 'flex' : 'none';
+      if (up)   up.style.display = '';
+      if (down) down.style.display = '';
+      if (sep)  sep.style.display = '';
+    }
+  }
+
   function applyClockTime() {
     const mins = parseInt(document.getElementById('clockSetMin').value) || 8;
     countdownFrom = Math.max(1, Math.min(60, mins)) * 60;
     if (!gameClockRunning) updateClockDisplay();
-    document.getElementById('clockSetWrap').style.display = 'none';
-    // Hide UP/DOWN buttons once SET is confirmed
-    document.getElementById('btnCountUp').style.display = 'none';
-    document.getElementById('btnCountDown').style.display = 'none';
-    document.getElementById('clockDirSep').style.display = 'none';
+    clockSetupDone = true;
+    applyClockSetupUI();
     autoSaveRoster();
   }
 
@@ -3464,9 +3484,8 @@
     players.forEach(p => { p.courtStartTime = null; });
     updateClockDisplay();
     // Restore UP/DOWN buttons
-    document.getElementById('btnCountUp').style.display = '';
-    document.getElementById('btnCountDown').style.display = '';
-    document.getElementById('clockDirSep').style.display = '';
+    clockSetupDone = false;
+    applyClockSetupUI();
     // Reset scores, stats, and quarter
     players.forEach(p => {
       p.stats = { pts:0, fgm:0, fga:0, threes:0, ftm:0, mft:0, reb:0, ast:0, stl:0, blk:0, to:0, fouls:0 };
@@ -4591,7 +4610,6 @@
   // by the master's next push, which flipped it back, which re-sent it — an endless ping-pong.
   // With a single shared document and last-write-wins there is nothing to ping-pong against.
   const LS_FILE = 'live-state.json';
-  const LS_BRAND_FILE = 'live-brand.json';
   const LS_INTERVAL = 4000;
 
   let lsCfg = { owner: '', repo: '', branch: 'live', token: '', mode: 'off' };
@@ -4611,10 +4629,12 @@
   let lsBusy = false;
   let lsLastHash = null;       // hash of the state as of our last push/apply
   let lsLocalChangeAt = 0;     // when we first noticed local state differing from lsLastHash
-  let lsLastKnownTs = 0;       // newest remote ts we have seen
+  let lsLastKnownTs = 0;       // newest remote ts we have seen (display only)
+  let lsSeenVer = 0;           // highest state version we have adopted or published
   let lsLastPushAt = 0;        // when we last published (drives the running-clock heartbeat)
   let lsPrimed = false;        // has this device taken on the already-published state yet?
   let lsAssetTick = 0;         // counts polls, to reconcile assets periodically
+  let lsAssetDirty = false;    // a tap happened: a photo or logo may have just changed
 
   function lsStatus(msg) {
     const el = document.getElementById('lsStatus');
@@ -4647,141 +4667,190 @@
     return 'HTTP ' + r.status + detail;
   }
 
-  // ─── Branding (logo / colours / names) lives in its own file: it is large and rarely changes
-  const LS_BRAND_KEYS = ['teamName', 'oppName', 'themeColor', 'bucketboard_theme_mode', 'customLogo'];
-  let lsBrandSha = null, lsBrandLastPushed = null, lsBrandLastApplied = null;
-
-  // Everything the app keeps in browser storage travels in this file: team logo, player
-  // photos, roster, saved games, rotation presets, whiteboard plays, colours, names.
-  // Enumerated dynamically so anything added later syncs without further changes.
+  // ─── ASSETS (logo, player photos, roster, saved games, presets, plays) ───────────────
+  // Design goal: adding ONE player photo must upload only that photo, and a device that
+  // already has a photo must never download it again.
   //
-  // NEVER sync these:
-  //   bucketboard_livesync  — holds the GitHub token. Committing it would publish the
-  //                           credential into the repo. Each device keeps its own copy.
-  //   bucketboard_device_id — must stay unique per device or they can't tell each other apart.
-  //   bucketboard_subs_sort — a local view preference, not shared data.
+  // Two things make that work:
+  //   1. Each asset is its own file in the repo, so a change to one doesn't rewrite the rest.
+  //   2. All player photos live in a single browser-storage key, which would defeat that —
+  //      so that key is split into one synced unit per player before syncing, and
+  //      reassembled afterwards.
+  //
+  // A small manifest lists every unit with the time it last changed and a hash of its
+  // contents. That is the only file fetched every cycle; actual photo data is transferred
+  // solely when its hash differs from what we already hold.
+  const LS_ASSET_DIR = 'assets/';
+  const LS_MANIFEST = LS_ASSET_DIR + 'manifest.json';
+  const LS_META_KEY = 'bucketboard_asset_meta';
+  const LS_PICS_KEY = 'bucketboard_player_pics';
+
   const LS_ASSET_EXCLUDE = ['bucketboard_livesync', 'bucketboard_device_id', 'bucketboard_subs_sort',
                             'bucketboard_asset_meta', 'bucketboard_wakelock'];
 
-  function lsBrandPayload() {
-    const o = {};
-    let keys = [];
-    try {
-      for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k) keys.push(k); }
-    } catch (e) {}
-    if (!keys.length) keys = LS_BRAND_KEYS.slice();     // fallback if enumeration is unavailable
-    keys.sort().forEach(k => {
-      if (LS_ASSET_EXCLUDE.indexOf(k) !== -1) return;
-      const v = localStorage.getItem(k);
-      if (v !== null) o[k] = v;
-    });
-    return o;
-  }
-  function lsBrandHash() { return lsHash(JSON.stringify(lsBrandPayload())); }
-
-  // remoteBrandHash: what the shared state says is currently published. We must compare
-  // against that and not only against what WE last pushed — otherwise, if the other device
-  // overwrote the asset file with a sparser copy, we'd never notice and never restore ours.
-  // ─── ASSETS (logo, player photos, roster, saved games, presets, plays) ───────────────
-  // These are merged PER KEY, not replaced wholesale. Whole-file last-write-wins is wrong
-  // here: a device that happens to sync last but holds fewer photos would erase the other
-  // device's data. Instead every key carries the time it last changed, and the newer
-  // timestamp wins for that key alone. Deletions are recorded as tombstones so removing a
-  // photo still propagates instead of the photo simply reappearing from the other device.
-  const LS_META_KEY = 'bucketboard_asset_meta';
+  let lsShaCache = {};        // repo path -> sha, so updates don't need a lookup each time
+  let lsManifestSha = null;
 
   function lsMetaLoad() { try { return JSON.parse(localStorage.getItem(LS_META_KEY) || '{}'); } catch (e) { return {}; } }
   function lsMetaSave(m) { try { localStorage.setItem(LS_META_KEY, JSON.stringify(m)); } catch (e) {} }
 
-  // Record local edits: stamp any key whose value changed, tombstone any that disappeared.
-  function lsAssetStamp() {
-    const cur = lsBrandPayload();
-    const meta = lsMetaLoad();
-    const t = Date.now();
-    Object.keys(cur).forEach(k => {
-      const h = lsHash(cur[k]);
-      if (!meta[k] || meta[k].deleted || meta[k].h !== h) meta[k] = { t, h };
+  // Break browser storage into individually syncable units.
+  //   k:<name>   a whole storage key (roster, logo, colours, saved games, ...)
+  //   pic:<who>  one player's photo, pulled out of the shared photo key
+  function lsUnits() {
+    const units = {};
+    let keys = [];
+    try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k) keys.push(k); } } catch (e) {}
+    keys.forEach(k => {
+      if (LS_ASSET_EXCLUDE.indexOf(k) !== -1) return;
+      if (k === LS_PICS_KEY) return;                      // handled below, one unit per player
+      const v = localStorage.getItem(k);
+      if (v !== null) units['k:' + k] = v;
     });
-    Object.keys(meta).forEach(k => {
-      if (!(k in cur) && !meta[k].deleted) meta[k] = { t, deleted: true };
-    });
-    lsMetaSave(meta);
-    return { cur, meta };
+    let pics = {};
+    try { pics = JSON.parse(localStorage.getItem(LS_PICS_KEY) || '{}'); } catch (e) { pics = {}; }
+    Object.keys(pics).forEach(who => { units['pic:' + who] = pics[who]; });
+    return units;
   }
 
-  // Apply anything the other device changed more recently than we did. Returns true if our
-  // local storage actually changed, so callers know to refresh the UI.
-  function lsAssetMerge(remote) {
-    const { cur, meta } = lsAssetStamp();
-    const rmeta = (remote && remote.meta) || {};
-    const rdata = (remote && remote.data) || {};
-    let changed = false;
-    const keys = {};
-    Object.keys(meta).forEach(k => keys[k] = 1);
-    Object.keys(rmeta).forEach(k => keys[k] = 1);
-    Object.keys(keys).forEach(k => {
-      if (LS_ASSET_EXCLUDE.indexOf(k) !== -1 || k === LS_META_KEY) return;
-      const lm = meta[k], rm = rmeta[k];
-      if (!rm) return;                                  // they don't know about it; ours stands
-      if (lm && lm.t >= rm.t) return;                   // ours is the same age or newer
-      if (rm.deleted) {
-        if (k in cur) { try { localStorage.removeItem(k); } catch (e) {} changed = true; }
-        meta[k] = { t: rm.t, deleted: true };
-      } else if (k in rdata) {
-        try { localStorage.setItem(k, rdata[k]); changed = true; } catch (e) {
-          lsStatus('Device storage is full — could not save synced photos');
-        }
-        meta[k] = { t: rm.t, h: rm.h };
+  // Write merged units back into browser storage, rebuilding the shared photo key.
+  function lsWriteUnits(changes) {
+    let pics = {};
+    try { pics = JSON.parse(localStorage.getItem(LS_PICS_KEY) || '{}'); } catch (e) { pics = {}; }
+    let picsTouched = false;
+    Object.keys(changes).forEach(id => {
+      const val = changes[id];
+      if (id.indexOf('pic:') === 0) {
+        const who = id.slice(4);
+        if (val === null) { delete pics[who]; } else { pics[who] = val; }
+        picsTouched = true;
+      } else if (id.indexOf('k:') === 0) {
+        const k = id.slice(2);
+        try { if (val === null) localStorage.removeItem(k); else localStorage.setItem(k, val); }
+        catch (e) { lsStatus('Device storage is full — could not save synced photos'); }
       }
     });
+    if (picsTouched) {
+      try { localStorage.setItem(LS_PICS_KEY, JSON.stringify(pics)); }
+      catch (e) { lsStatus('Device storage is full — could not save synced photos'); }
+    }
+  }
+
+  // Stamp local edits. Uses a per-unit VERSION COUNTER, not a wall-clock time, because the
+  // two devices' clocks are not in step: if the iPad's clock ran a minute fast, its stale
+  // logo carried a "newer" timestamp than a logo just changed on the laptop, so the old one
+  // kept winning and overwriting the new one. A counter can't be skewed — each local edit
+  // bumps the version one above the highest we've seen from anywhere, so the newest edit
+  // always wins regardless of what the device clocks say.
+  function lsAssetStamp() {
+    const units = lsUnits();
+    const meta = lsMetaLoad();
+    Object.keys(units).forEach(id => {
+      const h = lsHash(units[id]);
+      if (!meta[id] || meta[id].deleted || meta[id].h !== h) {
+        meta[id] = { v: ((meta[id] && meta[id].v) || 0) + 1, h };
+      }
+    });
+    Object.keys(meta).forEach(id => {
+      if (!(id in units) && !meta[id].deleted) meta[id] = { v: (meta[id].v || 0) + 1, deleted: true };
+    });
     lsMetaSave(meta);
-    return changed;
+    return { units, meta };
   }
 
-  function lsAssetBody() {
-    const { cur, meta } = lsAssetStamp();
-    return JSON.stringify({ ts: Date.now(), meta, data: cur, hash: lsBrandHash() });
+  // Short, stable, filesystem-safe name for a unit.
+  function lsUnitFile(id) {
+    return LS_ASSET_DIR + id.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 60) + '-' + lsHash(id).replace(':', '_') + '.json';
   }
 
-  async function lsAssetFetch() {
-    const r = await lsApi('/contents/' + LS_BRAND_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now(),
-      { headers: { 'Accept': 'application/vnd.github.raw' } });
+  function lsBrandPayload() { return lsUnits(); }
+  // Hash of the manifest, not of the data — cheap to compute every few seconds even when
+  // there are megabytes of photos.
+  function lsBrandHash() {
+    const meta = lsMetaLoad();
+    const sig = Object.keys(meta).sort().map(id => id + '@' + (meta[id].v || 0) + (meta[id].deleted ? 'd' : ''));
+    return lsHash(sig.join('|'));
+  }
+
+  async function lsRepoGet(path, raw) {
+    const r = await lsApi('/contents/' + path + '?ref=' + lsCfg.branch + '&t=' + Date.now(),
+      raw ? { headers: { 'Accept': 'application/vnd.github.raw' } } : undefined);
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(await lsErrText(r));
-    const txt = (await r.text()).trim();
-    if (!txt) return null;
-    try { return JSON.parse(txt); } catch (e) { return null; }
+    if (raw) { const t = (await r.text()).trim(); return t || null; }
+    const j = await r.json();
+    lsShaCache[path] = j.sha;
+    let text = '';
+    if (j.content && j.encoding === 'base64') text = decodeURIComponent(escape(atob(j.content.replace(/\s/g, ''))));
+    else text = (await lsRepoGet(path, true)) || '';
+    return text.trim() || null;
   }
 
-  async function lsAssetPut(body) {
-    const put = () => lsApi('/contents/' + LS_BRAND_FILE, {
+  async function lsRepoPut(path, text, message) {
+    const put = () => lsApi('/contents/' + path, {
       method: 'PUT',
       body: JSON.stringify({
-        message: 'assets', content: btoa(unescape(encodeURIComponent(body))),
-        branch: lsCfg.branch, sha: lsBrandSha || undefined
+        message: message || 'asset',
+        content: btoa(unescape(encodeURIComponent(text))),
+        branch: lsCfg.branch,
+        sha: lsShaCache[path] || undefined
       })
     });
     let r = await put();
-    if (r.status === 404) { await lsEnsureBranch(); lsBrandSha = null; r = await put(); }
+    if (r.status === 404) { await lsEnsureBranch(); delete lsShaCache[path]; r = await put(); }
     if (r.status === 409 || r.status === 422) {
-      const meta = await lsApi('/contents/' + LS_BRAND_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now());
-      if (meta.ok) lsBrandSha = (await meta.json()).sha;
+      const meta = await lsApi('/contents/' + path + '?ref=' + lsCfg.branch + '&t=' + Date.now());
+      if (meta.ok) lsShaCache[path] = (await meta.json()).sha; else delete lsShaCache[path];
       r = await put();
     }
     if (!r.ok) throw new Error(await lsErrText(r));
-    lsBrandSha = (await r.json()).content.sha;
+    lsShaCache[path] = (await r.json()).content.sha;
   }
 
-  // Full asset reconciliation: pull, merge, and push back if our merged view differs.
+  // Pull only what changed, push only what changed.
   async function lsSyncAssets() {
     try {
-      const remote = await lsAssetFetch();
-      const changedLocally = lsAssetMerge(remote);
+      const manifestText = await lsRepoGet(LS_MANIFEST);
+      let remoteMeta = {};
+      if (manifestText) {
+        try { remoteMeta = (JSON.parse(manifestText) || {}).meta || {}; } catch (e) { remoteMeta = {}; }
+      }
+
+      // Snapshot the manifest as published, so we can tell whether we actually altered it.
+      const remoteMetaOrig = JSON.stringify(remoteMeta);
+
+      const { units, meta } = lsAssetStamp();
+
+      // ── download: only units whose remote copy is newer than ours ──
+      const toFetch = [];
+      Object.keys(remoteMeta).forEach(id => {
+        const lm = meta[id], rm = remoteMeta[id];
+        const lv = (lm && lm.v) || 0, rv = (rm && rm.v) || 0;
+        if (lm && lv >= rv) return;                     // ours is the same version or newer
+        if (rm.deleted) { toFetch.push({ id, del: true, v: rv }); return; }
+        if (lm && lm.h === rm.h) { meta[id] = { v: rv, h: rm.h }; return; } // same bytes, no download
+        toFetch.push({ id, v: rv, h: rm.h });
+      });
+
+      const changes = {};
+      let downloaded = 0;
+      for (const item of toFetch) {
+        if (item.del) { changes[item.id] = null; meta[item.id] = { v: item.v, deleted: true }; continue; }
+        const txt = await lsRepoGet(lsUnitFile(item.id), true);
+        if (txt === null) continue;
+        let val;
+        try { val = JSON.parse(txt).v; } catch (e) { continue; }
+        changes[item.id] = val;
+        meta[item.id] = { v: item.v, h: item.h };
+        downloaded++;
+      }
+      const changedLocally = Object.keys(changes).length > 0;
+      if (changedLocally) lsWriteUnits(changes);
+      lsMetaSave(meta);
 
       if (changedLocally) {
-        // These are read into memory once at startup, so refresh the caches or new photos
-        // and plays won't show until a reload.
-        try { subsPics = JSON.parse(localStorage.getItem('bucketboard_player_pics') || '{}'); } catch (e) {}
+        // Refresh the caches these are read into at startup, or new photos/plays won't show.
+        try { subsPics = JSON.parse(localStorage.getItem(LS_PICS_KEY) || '{}'); } catch (e) {}
         try { wbPlays = JSON.parse(localStorage.getItem('bucketboard_wb_plays') || '{}'); } catch (e) {}
         try { if (typeof applySettings === 'function') applySettings(); } catch (e) {}
         try { if (typeof wbRefreshPlayList === 'function') wbRefreshPlayList(); } catch (e) {}
@@ -4792,24 +4861,39 @@
         } catch (e) {}
       }
 
-      // Push if the remote is missing anything we hold, or holds an older version of it.
-      const { cur, meta } = lsAssetStamp();
-      const rmeta = (remote && remote.meta) || {};
-      let needsPush = !remote;
-      if (!needsPush) {
-        Object.keys(meta).forEach(k => {
-          const rm = rmeta[k];
-          if (!rm || meta[k].t > rm.t) needsPush = true;
-        });
+      // ── upload: only units we hold a newer version of ──
+      const after = lsAssetStamp();
+      const localUnits = after.units, localMeta = after.meta;
+      let uploaded = 0;
+      for (const id of Object.keys(localMeta)) {
+        const lm = localMeta[id], rm = remoteMeta[id];
+        const lv = lm.v || 0, rv = (rm && rm.v) || 0;
+        if (rm && rv >= lv) continue;                   // remote already has this version
+        if (rm && rm.h && lm.h && rm.h === lm.h) continue; // identical bytes — nothing to send
+        if (lm.deleted) { remoteMeta[id] = { v: lv, deleted: true }; continue; }
+        if (!(id in localUnits)) continue;
+        await lsRepoPut(lsUnitFile(id), JSON.stringify({ id, v: localUnits[id] }), 'asset ' + id);
+        remoteMeta[id] = { v: lv, h: lm.h };
+        uploaded++;
       }
-      if (needsPush) {
-        const body = lsAssetBody();
-        if (body.length > 6e6) {
-          lsStatus('Photos/logo total ' + Math.round(body.length / 1e6) + 'MB — syncing may be slow. Consider removing some player photos.');
-        }
-        await lsAssetPut(body);
+
+      // Manifest last, so it never advertises a unit that hasn't finished uploading.
+      const merged = {};
+      Object.keys(remoteMeta).forEach(id => merged[id] = remoteMeta[id]);
+      Object.keys(localMeta).forEach(id => {
+        if (!merged[id] || (localMeta[id].v || 0) > (merged[id].v || 0)) merged[id] = localMeta[id];
+      });
+      // Compare against the manifest as we FOUND it — comparing against remoteMeta would
+      // miss changes, since tombstones are written into that object in place above.
+      const mergedSig = JSON.stringify(merged);
+      if (!manifestText || mergedSig !== remoteMetaOrig || uploaded) {
+        await lsRepoPut(LS_MANIFEST, JSON.stringify({ ts: Date.now(), meta: merged }), 'manifest');
       }
-      lsBrandLastPushed = lsBrandHash();
+      lsMetaSave(merged);
+
+      if (uploaded || downloaded) {
+        lsStatus('Assets synced — ' + uploaded + ' sent, ' + downloaded + ' received');
+      }
       return changedLocally;
     } catch (e) {
       console.warn('asset sync failed', e);
@@ -4818,7 +4902,6 @@
     }
   }
 
-  // Kept as thin wrappers so the rest of the sync loop reads the same as before.
   async function lsPushBrand() { return lsSyncAssets(); }
   async function lsPullBrand() { return lsSyncAssets(); }
 
@@ -4841,7 +4924,8 @@
   // ─── Snapshot ────────────────────────────────────────────────────────────────────────
   function lsSnapshot() {
     return {
-      ts: Date.now(),
+      ts: Date.now(),           // shown in the status line only — never compared across devices
+      ver: 0,                   // logical version, set at push time; this is what is compared
       device: LS_DEVICE,
       at: Date.now(),                 // wall clock at capture, used to catch the game clock up
       players: players.map(p => ({
@@ -4851,7 +4935,7 @@
       })),
       gameClockSeconds, gameClockRunning, currentQuarter,
       oppScore, oppFgm, oppFga,
-      clockMode, countdownFrom, periodMode,
+      clockMode, countdownFrom, periodMode, clockSetupDone,
       brandHash: lsBrandHash()
     };
   }
@@ -4861,13 +4945,25 @@
   // it had "changed" and push constantly, fighting each other. So it is excluded while
   // running, and included when stopped (so manual clock edits still sync).
   function lsStateHash(s) {
+    // While the clock runs, playSeconds climbs on its own on BOTH devices. Including it
+    // here made a device think the user had changed something, so it would push its own
+    // stale snapshot back — which is what restarted the clock right after a pause.
+    // Time-derived values are therefore excluded while running; when stopped they are
+    // meaningful again and included.
+    const players = s.gameClockRunning
+      ? s.players.map(p => Object.assign({}, p, { playSeconds: null }))
+      : s.players;
     const sig = {
-      players: s.players, currentQuarter: s.currentQuarter,
+      players: players, currentQuarter: s.currentQuarter,
       oppScore: s.oppScore, oppFgm: s.oppFgm, oppFga: s.oppFga,
       clockMode: s.clockMode, countdownFrom: s.countdownFrom, periodMode: s.periodMode,
+      clockSetupDone: s.clockSetupDone,
       gameClockRunning: s.gameClockRunning,
-      gameClockSeconds: s.gameClockRunning ? null : s.gameClockSeconds,
-      brandHash: s.brandHash
+      gameClockSeconds: s.gameClockRunning ? null : s.gameClockSeconds
+      // brandHash is deliberately NOT part of this signature. Photos and logos carry their
+      // own per-unit versions. Including it meant that merely RECEIVING a photo changed
+      // this device's signature, so it believed the user had edited the game and
+      // republished its stale game state — overwriting the other device's real changes.
     };
     return lsHash(JSON.stringify(sig));
   }
@@ -4919,9 +5015,8 @@
         // Set the value first: starting the clock anchors its ticking to gameClockSeconds.
         gameClockSeconds = target;
         try { toggleGameClock(); } catch (e) {}
-      } else if (Math.abs(gameClockSeconds - target) >= 2) {
-        // Both running but drifted apart — re-anchor. Guarded by a 2s threshold so we
-        // aren't stopping/starting the clock on every poll over sub-second jitter.
+      } else if (Math.abs(gameClockSeconds - target) >= 1) {
+        // Both running but drifted apart — re-anchor to the sender's time.
         try { toggleGameClock(); } catch (e) {}
         gameClockSeconds = target;
         try { toggleGameClock(); } catch (e) {}
@@ -4938,8 +5033,10 @@
       // Drive the clock's UI through the app's own setters, so the other device's control
       // row actually matches — UP/DOWN highlighting, the minutes SET box, QUARTERS/HALVES
       // label and the period pips. Setting the variables alone left these stale.
+      clockSetupDone = !!s.clockSetupDone;      // must be set BEFORE setClockMode renders
       if (typeof setClockMode === 'function' && s.clockMode !== undefined) setClockMode(s.clockMode);
       else clockMode = s.clockMode;
+      if (typeof applyClockSetupUI === 'function') applyClockSetupUI();
       if (typeof setPeriodMode === 'function' && s.periodMode && s.periodMode !== periodMode) setPeriodMode(s.periodMode);
       else periodMode = s.periodMode;
       const minEl = document.getElementById('clockSetMin');
@@ -5013,7 +5110,10 @@
       const rs = remote.exists ? remote.snap : null;
       const remoteIsOthers = rs && rs.device !== LS_DEVICE;
       const remoteTs = rs ? (rs.ts || 0) : 0;
-      const remoteIsNew = remoteIsOthers && remoteTs > lsLastKnownTs;
+      const remoteVer = rs ? (rs.ver || 0) : 0;
+      // Compared by logical version, never by timestamp: the two devices' clocks disagree,
+      // and a device whose clock runs fast would otherwise win every conflict with stale data.
+      const remoteIsNew = remoteIsOthers && remoteVer > lsSeenVer;
 
       // While the clock runs, nothing else may change for minutes, so there is nothing to
       // push — and with no fresh snapshot the other device has no way to correct the drift
@@ -5028,8 +5128,8 @@
         await lsSyncAssets();
         lsPrimed = true;
         lsLastKnownTs = remoteTs;
+        lsSeenVer = Math.max(lsSeenVer, remoteVer);
         lsLastHash = lsStateHash(lsSnapshot());
-        lsBrandLastPushed = lsBrandHash();
         lsLocalChangeAt = 0;
         lsStatus('Loaded current game from the other device');
         lsBusy = false;
@@ -5037,11 +5137,13 @@
       }
       lsPrimed = true;
 
-      // Most recent change wins.
-      if (remoteIsNew && (!locallyChanged || remoteTs > lsLocalChangeAt)) {
+      // Most recent change wins. If we have untouched local state we take theirs; if we
+      // have our own edits we publish instead, bumping the version above theirs.
+      if (remoteIsNew && !locallyChanged) {
         lsApplySnapshot(rs);
         await lsSyncAssets();                 // awaited: hashes below must see the new assets
         lsLastKnownTs = remoteTs;
+        lsSeenVer = Math.max(lsSeenVer, remoteVer);
         lsLastHash = lsStateHash(lsSnapshot());
         lsLocalChangeAt = 0;
         lsStatus('Updated from other device ' + new Date(remoteTs).toLocaleTimeString());
@@ -5049,7 +5151,9 @@
         await lsSyncAssets();
         const out = lsSnapshot();
         out.ts = Date.now();
+        out.ver = Math.max(lsSeenVer, remoteVer) + 1;   // strictly newer than anything seen
         await lsPushState(out);
+        lsSeenVer = out.ver;
         lsLastHash = lsStateHash(out);
         lsLastKnownTs = out.ts;
         lsLastPushAt = Date.now();
@@ -5061,7 +5165,9 @@
         // Nothing published yet — seed the shared file so the other device has something.
         await lsSyncAssets();
         const out = lsSnapshot();
+        out.ver = lsSeenVer + 1;
         await lsPushState(out);
+        lsSeenVer = out.ver;
         lsLastHash = lsStateHash(out);
         lsLastKnownTs = out.ts;
         lsStatus('Published initial state');
@@ -5070,8 +5176,14 @@
         // sparser copy, or a photo was added while nothing else changed) — reconcile them.
         // Reconcile assets periodically even when the game state is quiet — a photo may
         // have been added on the other device without anything else changing.
+        // A photo/logo change alters no game state, so it would otherwise sit unsent until
+        // the periodic reconcile. Any tap marks assets as worth re-checking; the check costs
+        // a single small manifest request when nothing has actually changed.
         lsAssetTick = (lsAssetTick + 1) % 5;
-        if (lsAssetTick === 0 || (rs && rs.brandHash && rs.brandHash !== lsBrandHash())) await lsSyncAssets();
+        if (lsAssetDirty || lsAssetTick === 0 || (rs && rs.brandHash && rs.brandHash !== lsBrandHash())) {
+          lsAssetDirty = false;
+          await lsSyncAssets();
+        }
         lsStatus('In sync · ' + new Date().toLocaleTimeString());
       }
     } catch (e) {
@@ -5091,7 +5203,7 @@
     if (lsCfg.mode === 'off') { lsStatus('Sync off'); return; }
     if (!lsCfg.owner || !lsCfg.repo || !lsCfg.token) { lsStatus('Fill in owner, repo, and token first'); return; }
     if (!lsCfg.branch) lsCfg.branch = 'live';
-    lsLastHash = null; lsLocalChangeAt = 0; lsLastKnownTs = 0; lsSha = null; lsPrimed = false;
+    lsLastHash = null; lsLocalChangeAt = 0; lsLastKnownTs = 0; lsSeenVer = 0; lsSha = null; lsPrimed = false;
     lsBadge(true);
     lsTick();
     lsTimer = setInterval(lsTick, LS_INTERVAL);
@@ -5181,8 +5293,8 @@
     if (lsNudgeTimer) clearTimeout(lsNudgeTimer);
     lsNudgeTimer = setTimeout(() => { lsNudgeTimer = null; lsTick(); }, delay == null ? 200 : delay);
   }
-  document.addEventListener('click', () => lsNudge(200), true);
-  document.addEventListener('change', () => lsNudge(200), true);
+  document.addEventListener('click', () => { lsAssetDirty = true; lsNudge(200); }, true);
+  document.addEventListener('change', () => { lsAssetDirty = true; lsNudge(200); }, true);
   // The clock is the one control where a delay is most obvious — sync it on the spot.
   if (typeof toggleGameClock === 'function') {
     const _origToggleClock = toggleGameClock;
