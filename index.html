@@ -1808,7 +1808,7 @@
 
   <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px;">
     <div class="settings-label" style="margin-bottom:6px;">Live Sync (GitHub)</div>
-    <div class="settings-hint" style="margin-bottom:8px;">Automatic, every 5 seconds — no button to press. Master pushes clock/score/stats to the repo; Viewer polls and displays them. Viewer can also make substitutions (tap players in the Subs tab as normal) — those sync back to Master and then out to everyone else. Use a fine-grained token limited to this repo with Contents read &amp; write.</div>
+    <div class="settings-hint" style="margin-bottom:8px;">Automatic, every 4 seconds — no button to press. Both devices are equal: work the clock, score, stats and subs from either one, and the most recent change wins. Turn Sync On with the same owner/repo/token on each device. Use a fine-grained token limited to this repo with Contents read &amp; write.</div>
     <div style="display:flex;gap:8px;margin-bottom:8px;">
       <input type="text" id="lsOwner" placeholder="owner (Justyntime1104)" style="flex:1;" class="ls-input">
       <input type="text" id="lsRepo" placeholder="repo (bucketboard)" style="flex:1;" class="ls-input">
@@ -1820,8 +1820,7 @@
     <div style="display:flex;gap:8px;align-items:center;">
       <select id="lsMode" class="ls-input" style="flex:1;">
         <option value="off">Sync Off</option>
-        <option value="master">Master (runs the game — clock, score, stats)</option>
-        <option value="viewer">Viewer / Slave (live display, can also sub players)</option>
+        <option value="on">Sync On (this device)</option>
       </select>
       <button class="btn-save-settings" style="flex:1;font-size:13px;" onclick="lsApply()">Apply Sync</button>
     </div>
@@ -1829,10 +1828,9 @@
   </div>
 
   <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px;">
-    <div class="settings-label" style="margin-bottom:6px;">Full Data Sync (GitHub) — manual, before/after games</div>
-    <div class="settings-hint" style="margin-bottom:8px;">For roster edits and saved game history — things you set up before or clean up after a game, not during one (this one's a manual button on purpose, since auto-applying it mid-game would reload the page and interrupt play). Live Sync above handles the actual in-game score/clock/subs automatically. Uses the same owner/repo/token. Tap Sync Now on each device after making roster or history changes.</div>
-    <button class="btn-save-settings" style="width:100%;" onclick="fsSyncNow()">🔄 Sync Now</button>
-    <div class="settings-hint" id="fsStatus" style="margin-top:6px;">Not synced yet</div>
+    <div class="settings-label" style="margin-bottom:6px;">Sync Now</div>
+    <div class="settings-hint" style="margin-bottom:8px;">Sync runs on its own every few seconds. This just forces an immediate check instead of waiting — handy right after you change the roster, team name or logo.</div>
+    <button class="btn-save-settings" style="width:100%;" onclick="lsSyncNow()">🔄 Sync Now</button>
   </div>
 
   <div style="display:flex;gap:8px;margin-top:8px;">
@@ -4577,27 +4575,45 @@
     if (play && play.v === 3) wbToast(play.tracks.length ? (play.tracks.length + ' player track(s) recorded') : 'No motion yet — record players');
   }
 
-  // ─── LIVE SYNC (GitHub master/viewer) ───
+  // ─── PEER SYNC (GitHub) ───────────────────────────────────────────────────────────────
+  // Every device is equal. There is no master and no viewer: each one may work the controls,
+  // and the most recent change wins. One shared file holds the whole game state; each device
+  // polls it, and pushes whenever its own state has changed more recently than the remote's.
+  //
+  // Why this shape: the old master/viewer split meant a sub made on the viewer was overwritten
+  // by the master's next push, which flipped it back, which re-sent it — an endless ping-pong.
+  // With a single shared document and last-write-wins there is nothing to ping-pong against.
   const LS_FILE = 'live-state.json';
-  const LS_INTERVAL = 5000;
+  const LS_BRAND_FILE = 'live-brand.json';
+  const LS_INTERVAL = 4000;
+
   let lsCfg = { owner: '', repo: '', branch: 'live', token: '', mode: 'off' };
   try { Object.assign(lsCfg, JSON.parse(localStorage.getItem('bucketboard_livesync') || '{}')); } catch (e) {}
-  let lsTimer = null;
-  let lsSha = null;          // sha of live-state.json on the sync branch (master)
-  let lsLastHash = '';       // last pushed payload hash (master)
-  let lsLastTs = 0;          // last applied snapshot ts (viewer)
-  let lsBusy = false;
+  // Back-compat: old configs used master/viewer. Both simply mean "sync on" now.
+  if (lsCfg.mode === 'master' || lsCfg.mode === 'viewer') lsCfg.mode = 'on';
 
-  // ─── SUBS CHANNEL (viewer/slave can request substitutions; master applies them) ───
-  const LS_SUBS_FILE = 'live-subs.json';
-  let lsSubsSha = null;         // sha of live-subs.json (both sides read it; only viewer writes it)
-  let lsSubsLastAppliedTs = 0;  // master: last subs request timestamp it has applied
-  let lsSubsLastPushedFP = null; // viewer: fingerprint of onCourt set last pushed
-  let lsSubsBusy = false;
+  // Stable per-device id, so a device can recognise (and ignore) its own pushes.
+  let LS_DEVICE = localStorage.getItem('bucketboard_device_id');
+  if (!LS_DEVICE) {
+    LS_DEVICE = 'd' + Math.random().toString(36).slice(2, 10);
+    try { localStorage.setItem('bucketboard_device_id', LS_DEVICE); } catch (e) {}
+  }
+
+  let lsTimer = null;
+  let lsSha = null;            // sha of live-state.json, needed to update it
+  let lsBusy = false;
+  let lsLastHash = null;       // hash of the state as of our last push/apply
+  let lsLocalChangeAt = 0;     // when we first noticed local state differing from lsLastHash
+  let lsLastKnownTs = 0;       // newest remote ts we have seen
 
   function lsStatus(msg) {
     const el = document.getElementById('lsStatus');
     if (el) el.textContent = msg;
+  }
+  function lsBadge(show) {
+    // NOTE: this element sits at the end of <body>, after this script. Always null-check.
+    const el = document.getElementById('lsViewerBadge');
+    if (el) el.style.display = show ? 'block' : 'none';
   }
   function lsApi(path, opts) {
     opts = opts || {};
@@ -4608,10 +4624,93 @@
     }, opts.headers || {});
     return fetch('https://api.github.com/repos/' + lsCfg.owner + '/' + lsCfg.repo + path, opts);
   }
+  function lsHash(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+    return h + ':' + str.length;
+  }
+  async function lsErrText(r) {
+    let detail = '';
+    try { detail = ' — ' + ((await r.json()).message || ''); } catch (e) {}
+    if (r.status === 401) detail += ' (token invalid or expired)';
+    if (r.status === 403) detail += ' (token needs Contents: Read and write on this repo)';
+    return 'HTTP ' + r.status + detail;
+  }
 
+  // ─── Branding (logo / colours / names) lives in its own file: it is large and rarely changes
+  const LS_BRAND_KEYS = ['teamName', 'oppName', 'themeColor', 'bucketboard_theme_mode', 'customLogo'];
+  let lsBrandSha = null, lsBrandLastPushed = null, lsBrandLastApplied = null;
+
+  function lsBrandPayload() {
+    const o = {};
+    LS_BRAND_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v !== null) o[k] = v; });
+    return o;
+  }
+  function lsBrandHash() { return lsHash(JSON.stringify(lsBrandPayload())); }
+
+  async function lsPushBrand() {
+    const hash = lsBrandHash();
+    if (hash === lsBrandLastPushed) return;      // unchanged: don't re-upload the logo image
+    try {
+      const body = JSON.stringify({ ts: Date.now(), hash, brand: lsBrandPayload() });
+      const put = () => lsApi('/contents/' + LS_BRAND_FILE, {
+        method: 'PUT',
+        body: JSON.stringify({
+          message: 'brand', content: btoa(unescape(encodeURIComponent(body))),
+          branch: lsCfg.branch, sha: lsBrandSha || undefined
+        })
+      });
+      let r = await put();
+      if (r.status === 404) { await lsEnsureBranch(); r = await put(); }
+      if (r.status === 409 || r.status === 422) {
+        const meta = await lsApi('/contents/' + LS_BRAND_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now());
+        if (meta.ok) lsBrandSha = (await meta.json()).sha;
+        r = await put();
+      }
+      if (!r.ok) throw new Error(await lsErrText(r));
+      lsBrandSha = (await r.json()).content.sha;
+      lsBrandLastPushed = hash;
+    } catch (e) { console.warn('brand push failed', e); }
+  }
+
+  async function lsPullBrand(remoteHash) {
+    if (!remoteHash || remoteHash === lsBrandLastApplied || remoteHash === lsBrandHash()) return;
+    try {
+      const r = await lsApi('/contents/' + LS_BRAND_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now(),
+        { headers: { 'Accept': 'application/vnd.github.raw' } });
+      if (!r.ok) return;
+      const txt = (await r.text()).trim();
+      if (!txt) return;
+      const payload = JSON.parse(txt);
+      Object.keys(payload.brand || {}).forEach(k => localStorage.setItem(k, payload.brand[k]));
+      lsBrandLastApplied = payload.hash || remoteHash;
+      lsBrandLastPushed = lsBrandHash();
+      try { if (typeof applySettings === 'function') applySettings(); } catch (e) {}
+    } catch (e) { console.warn('brand pull failed', e); }
+  }
+
+  async function lsEnsureBranch() {
+    let r = await lsApi('/git/ref/heads/' + lsCfg.branch);
+    if (r.ok) return true;
+    const repo = await lsApi('');
+    if (!repo.ok) throw new Error('repo lookup failed (' + await lsErrText(repo) + ')');
+    const def = (await repo.json()).default_branch;
+    const base = await lsApi('/git/ref/heads/' + def);
+    if (!base.ok) throw new Error('default branch lookup failed');
+    const sha = (await base.json()).object.sha;
+    const mk = await lsApi('/git/refs', {
+      method: 'POST', body: JSON.stringify({ ref: 'refs/heads/' + lsCfg.branch, sha })
+    });
+    if (!mk.ok) throw new Error('branch create failed (' + await lsErrText(mk) + ')');
+    return true;
+  }
+
+  // ─── Snapshot ────────────────────────────────────────────────────────────────────────
   function lsSnapshot() {
     return {
       ts: Date.now(),
+      device: LS_DEVICE,
+      at: Date.now(),                 // wall clock at capture, used to catch the game clock up
       players: players.map(p => ({
         number: p.number, name: p.name, weight: p.weight, pos: p.pos,
         onCourt: p.onCourt, stats: p.stats, plusMinus: p.plusMinus,
@@ -4620,84 +4719,32 @@
       gameClockSeconds, gameClockRunning, currentQuarter,
       oppScore, oppFgm, oppFga,
       clockMode, countdownFrom, periodMode,
-      teamName: localStorage.getItem('teamName') || '',
-      oppName: localStorage.getItem('oppName') || ''
+      brandHash: lsBrandHash()
     };
   }
 
-  async function lsEnsureBranch() {
-    // does the sync branch exist? if not, fork it from the default branch
-    let r = await lsApi('/git/ref/heads/' + lsCfg.branch);
-    if (r.ok) return true;
-    const repo = await lsApi('');
-    if (!repo.ok) throw new Error('repo lookup failed (' + repo.status + ')');
-    const def = (await repo.json()).default_branch;
-    const base = await lsApi('/git/ref/heads/' + def);
-    if (!base.ok) throw new Error('default branch lookup failed');
-    const sha = (await base.json()).object.sha;
-    const mk = await lsApi('/git/refs', {
-      method: 'POST',
-      body: JSON.stringify({ ref: 'refs/heads/' + lsCfg.branch, sha })
-    });
-    if (!mk.ok) throw new Error('branch create failed (' + mk.status + ')');
-    return true;
-  }
-
-  async function lsFetchSha() {
-    const r = await lsApi('/contents/' + LS_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now());
-    if (r.ok) { lsSha = (await r.json()).sha; }
-    else lsSha = null;
-  }
-
-  async function lsPush() {
-    if (lsBusy) return;
-    const snap = lsSnapshot();
-    const body = JSON.stringify(snap);
-    const hash = body.length + ':' + body.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 0);
-    // ts changes every call, so hash the payload without it
-    const stable = JSON.stringify(Object.assign({}, snap, { ts: 0 }));
-    const stableHash = stable.split('').reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 0) + ':' + stable.length;
-    if (stableHash === lsLastHash) return; // nothing changed
-    lsBusy = true;
-    try {
-      const put = () => lsApi('/contents/' + LS_FILE, {
-        method: 'PUT',
-        body: JSON.stringify({
-          message: 'live state',
-          content: btoa(unescape(encodeURIComponent(body))),
-          branch: lsCfg.branch,
-          sha: lsSha || undefined
-        })
-      });
-      let r = await put();
-      if (r.status === 404) { await lsEnsureBranch(); await lsFetchSha(); r = await put(); }
-      if (r.status === 409 || r.status === 422) { await lsFetchSha(); r = await put(); }
-      if (!r.ok) {
-        let detail = '';
-        try { detail = ' — ' + ((await r.json()).message || ''); } catch (e) {}
-        if (r.status === 403) detail += ' (token needs Contents: Read and write)';
-        if (r.status === 401) detail += ' (token invalid or expired)';
-        throw new Error('push failed (HTTP ' + r.status + ')' + detail);
-      }
-      lsSha = (await r.json()).content.sha;
-      lsLastHash = stableHash;
-      lsStatus('Master: pushed ' + new Date().toLocaleTimeString());
-    } catch (e) {
-      lsStatus('Master error: ' + e.message);
-    } finally {
-      lsBusy = false;
-    }
+  // Hash of the parts that represent a real user change. While the clock is running its
+  // seconds value changes on its own every tick — including it would make every device think
+  // it had "changed" and push constantly, fighting each other. So it is excluded while
+  // running, and included when stopped (so manual clock edits still sync).
+  function lsStateHash(s) {
+    const sig = {
+      players: s.players, currentQuarter: s.currentQuarter,
+      oppScore: s.oppScore, oppFgm: s.oppFgm, oppFga: s.oppFga,
+      clockMode: s.clockMode, countdownFrom: s.countdownFrom, periodMode: s.periodMode,
+      gameClockRunning: s.gameClockRunning,
+      gameClockSeconds: s.gameClockRunning ? null : s.gameClockSeconds,
+      brandHash: s.brandHash
+    };
+    return lsHash(JSON.stringify(sig));
   }
 
   function lsApplySnapshot(s) {
-    // SAFETY: never let an empty/rosterless snapshot wipe this device's roster. If the master
-    // is running with no players loaded (e.g. fresh browser, empty storage), ignore its pushes
-    // rather than mirroring the emptiness onto the viewer.
+    // Never let an empty roster from a freshly-opened device wipe a populated one.
     if (!s || !Array.isArray(s.players) || s.players.length === 0) {
-      lsStatus('Viewer: ignoring empty snapshot from Master (Master has no roster loaded)');
+      lsStatus('Ignored an empty update from the other device');
       return;
     }
-    // map incoming roster onto local players by number|name; rebuild if lineup differs
     const key = p => p.number + '|' + p.name;
     const local = {};
     players.forEach(p => { local[key(p)] = p; });
@@ -4717,143 +4764,130 @@
       seen.add(key(sp));
     });
     players = players.filter(p => seen.has(key(p)));
-    gameClockRunning = false;                 // viewer never runs its own clock logic
-    if (gameClockInterval) { clearInterval(gameClockInterval); gameClockInterval = null; }
-    gameClockSeconds = s.gameClockSeconds;
+
     currentQuarter = s.currentQuarter;
     oppScore = s.oppScore; oppFgm = s.oppFgm; oppFga = s.oppFga;
     clockMode = s.clockMode; countdownFrom = s.countdownFrom; periodMode = s.periodMode;
-    if (s.teamName) localStorage.setItem('teamName', s.teamName);
-    if (s.oppName) localStorage.setItem('oppName', s.oppName);
+
+    // Catch the clock up for however long the update spent in transit.
+    let secs = s.gameClockSeconds;
+    if (s.gameClockRunning && s.at) secs += Math.max(0, Math.floor((Date.now() - s.at) / 1000));
+    gameClockSeconds = secs;
+
+    // Match the other device's run/stop state using the app's own clock machinery, so
+    // intervals and per-player stint timers stay consistent.
+    if (!!s.gameClockRunning !== !!gameClockRunning) {
+      try { toggleGameClock(); } catch (e) {}
+    }
+    if (gameClockRunning) players.forEach(p => { if (p.onCourt) p.courtStartTime = now(); });
+
+    lsPullBrand(s.brandHash);
+
     try {
+      const minEl = document.getElementById('clockSetMin');
+      if (minEl) minEl.value = Math.round((countdownFrom || 480) / 60);
       updateClockDisplay();
       render();
       renderScoreTotal();
-      if (typeof renderSubs === 'function' && document.getElementById('tab-subs').classList.contains('active')) renderSubs();
+      const subsTab = document.getElementById('tab-subs');
+      if (typeof renderSubs === 'function' && subsTab && subsTab.classList.contains('active')) renderSubs();
     } catch (e) {}
   }
 
-  async function lsPoll() {
+  // ─── Fetch / push ────────────────────────────────────────────────────────────────────
+  async function lsFetch() {
+    const ref = '?ref=' + lsCfg.branch + '&t=' + Date.now();
+    const meta = await lsApi('/contents/' + LS_FILE + ref);
+    if (meta.status === 404) return { exists: false, sha: null, snap: null };
+    if (!meta.ok) throw new Error(await lsErrText(meta));
+    const json = await meta.json();
+    let text = '';
+    if (json.content && json.encoding === 'base64') {
+      text = decodeURIComponent(escape(atob(json.content.replace(/\s/g, ''))));
+    } else {
+      // Files over ~1MB come back with content:"" — fall back to the raw endpoint.
+      const raw = await lsApi('/contents/' + LS_FILE + ref, { headers: { 'Accept': 'application/vnd.github.raw' } });
+      if (!raw.ok) throw new Error(await lsErrText(raw));
+      text = await raw.text();
+    }
+    text = (text || '').trim();
+    if (!text) return { exists: false, sha: json.sha, snap: null };
+    let snap;
+    try { snap = JSON.parse(text); }
+    catch (e) { throw new Error('remote state unreadable — delete ' + LS_FILE + ' in the repo'); }
+    return { exists: true, sha: json.sha, snap };
+  }
+
+  async function lsPushState(snap) {
+    const body = JSON.stringify(snap);
+    const put = () => lsApi('/contents/' + LS_FILE, {
+      method: 'PUT',
+      body: JSON.stringify({
+        message: 'state', content: btoa(unescape(encodeURIComponent(body))),
+        branch: lsCfg.branch, sha: lsSha || undefined
+      })
+    });
+    let r = await put();
+    if (r.status === 404) { await lsEnsureBranch(); lsSha = null; r = await put(); }
+    if (r.status === 409 || r.status === 422) {
+      const cur = await lsFetch(); lsSha = cur.sha; r = await put();
+    }
+    if (!r.ok) throw new Error(await lsErrText(r));
+    lsSha = (await r.json()).content.sha;
+  }
+
+  // One cycle: see what the other device has, then publish anything newer of our own.
+  async function lsTick() {
     if (lsBusy) return;
     lsBusy = true;
     try {
-      const r = await lsApi('/contents/' + LS_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now(), {
-        headers: { 'Accept': 'application/vnd.github.raw+json' }
-      });
-      if (r.status === 404) { lsStatus('Viewer: waiting for Master to publish (no live-state.json on branch "' + lsCfg.branch + '" yet)'); lsBusy = false; return; }
-      if (!r.ok) {
-        let detail = '';
-        if (r.status === 401) detail = ' (token invalid or expired)';
-        if (r.status === 403) detail = ' (token lacks access to this repo)';
-        throw new Error('poll failed (HTTP ' + r.status + ')' + detail);
-      }
-      const raw = (await r.text()).trim();
-      if (!raw) { lsStatus('Viewer: live-state.json is empty, waiting for Master'); lsBusy = false; return; }
-      const s = JSON.parse(raw);
-      if (s.ts && s.ts > lsLastTs) {
-        lsLastTs = s.ts;
-        lsApplySnapshot(s);
-        lsStatus('Viewer: updated ' + new Date(s.ts).toLocaleTimeString());
+      const remote = await lsFetch();
+      if (remote.sha) lsSha = remote.sha;
+
+      const localSnap = lsSnapshot();
+      const localHash = lsStateHash(localSnap);
+      if (lsLastHash === null) lsLastHash = localHash;          // first run: adopt current state
+      const locallyChanged = localHash !== lsLastHash;
+      if (locallyChanged && !lsLocalChangeAt) lsLocalChangeAt = Date.now();
+      if (!locallyChanged) lsLocalChangeAt = 0;
+
+      const rs = remote.exists ? remote.snap : null;
+      const remoteIsOthers = rs && rs.device !== LS_DEVICE;
+      const remoteTs = rs ? (rs.ts || 0) : 0;
+      const remoteIsNew = remoteIsOthers && remoteTs > lsLastKnownTs;
+
+      // Most recent change wins.
+      if (remoteIsNew && (!locallyChanged || remoteTs > lsLocalChangeAt)) {
+        lsApplySnapshot(rs);
+        lsLastKnownTs = remoteTs;
+        lsLastHash = lsStateHash(lsSnapshot());
+        lsLocalChangeAt = 0;
+        lsStatus('Updated from other device ' + new Date(remoteTs).toLocaleTimeString());
+      } else if (locallyChanged) {
+        await lsPushBrand();
+        const out = lsSnapshot();
+        out.ts = Date.now();
+        await lsPushState(out);
+        lsLastHash = lsStateHash(out);
+        lsLastKnownTs = out.ts;
+        lsLocalChangeAt = 0;
+        lsStatus('Sent your changes ' + new Date(out.ts).toLocaleTimeString());
+      } else if (!rs) {
+        // Nothing published yet — seed the shared file so the other device has something.
+        await lsPushBrand();
+        const out = lsSnapshot();
+        await lsPushState(out);
+        lsLastHash = lsStateHash(out);
+        lsLastKnownTs = out.ts;
+        lsStatus('Published initial state');
+      } else {
+        lsStatus('In sync · ' + new Date().toLocaleTimeString());
       }
     } catch (e) {
-      lsStatus('Viewer error: ' + e.message);
+      lsStatus('Sync error: ' + e.message);
     } finally {
       lsBusy = false;
     }
-  }
-
-  // Bring exactly the given set of players (by number|name) onto the court, benching everyone
-  // else that's currently on. Mirrors toggleCourt/subPlayer's bookkeeping (courtStartTime,
-  // playSeconds, courtEntryScore) instead of blind field overwrite, so live timers stay correct.
-  function lsApplyTargetLineup(targetList) {
-    const key = p => p.number + '|' + p.name;
-    const targetKeys = new Set((targetList || []).map(t => t.number + '|' + t.name));
-    const outs = players.filter(p => p.onCourt && !targetKeys.has(key(p)));
-    outs.forEach(p => subPlayer(p.id, false));
-    const ins = players.filter(p => targetKeys.has(key(p)) && !p.onCourt);
-    ins.forEach(p => {
-      if (players.filter(x => x.onCourt).length >= 5) return; // safety cap
-      p.onCourt = true;
-      p.courtEntryScore = getTeamScore();
-      p.courtEntryOppScore = oppScore;
-      if (gameClockRunning) p.courtStartTime = now();
-    });
-    if (outs.length || ins.length) {
-      render();
-      const subsTab = document.getElementById('tab-subs');
-      if (typeof renderSubs === 'function' && subsTab && subsTab.classList.contains('active')) renderSubs();
-      lsStatus('Master: subs updated from Viewer ' + new Date().toLocaleTimeString());
-    }
-  }
-
-  // Viewer/slave: push its current on-court set so the master can pick up sub requests.
-  function lsSubsFingerprint() {
-    return players.filter(p => p.onCourt).map(p => p.number + '|' + p.name).sort().join(',');
-  }
-  async function lsPushSubs() {
-    if (lsSubsBusy) return;
-    const fp = lsSubsFingerprint();
-    if (fp === lsSubsLastPushedFP) return; // nothing changed locally
-    lsSubsBusy = true;
-    try {
-      const payload = { ts: Date.now(), onCourt: players.filter(p => p.onCourt).map(p => ({ number: p.number, name: p.name })) };
-      const body = JSON.stringify(payload);
-      const put = () => lsApi('/contents/' + LS_SUBS_FILE, {
-        method: 'PUT',
-        body: JSON.stringify({
-          message: 'subs request',
-          content: btoa(unescape(encodeURIComponent(body))),
-          branch: lsCfg.branch,
-          sha: lsSubsSha || undefined
-        })
-      });
-      let r = await put();
-      if (r.status === 404) { await lsEnsureBranch(); r = await put(); }
-      if (r.status === 409 || r.status === 422) {
-        const meta = await lsApi('/contents/' + LS_SUBS_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now());
-        if (meta.ok) lsSubsSha = (await meta.json()).sha;
-        r = await put();
-      }
-      if (!r.ok) throw new Error('subs push failed (' + r.status + ')');
-      lsSubsSha = (await r.json()).content.sha;
-      lsSubsLastPushedFP = fp;
-      lsStatus('Viewer: subs sent ' + new Date().toLocaleTimeString());
-    } catch (e) {
-      lsStatus('Viewer subs error: ' + e.message);
-    } finally {
-      lsSubsBusy = false;
-    }
-  }
-
-  // Master: poll for subs requests from the viewer and apply them.
-  async function lsPollSubs() {
-    if (lsSubsBusy) return;
-    lsSubsBusy = true;
-    try {
-      const r = await lsApi('/contents/' + LS_SUBS_FILE + '?ref=' + lsCfg.branch + '&t=' + Date.now());
-      if (r.status === 404) { lsSubsBusy = false; return; }
-      if (!r.ok) throw new Error('subs poll failed (' + r.status + ')');
-      const json = await r.json();
-      lsSubsSha = json.sha;
-      const text = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
-      const payload = JSON.parse(text);
-      if (payload.ts && payload.ts > lsSubsLastAppliedTs) {
-        lsSubsLastAppliedTs = payload.ts;
-        lsApplyTargetLineup(payload.onCourt);
-      }
-    } catch (e) {
-      console.warn('subs poll error', e);
-    } finally {
-      lsSubsBusy = false;
-    }
-  }
-
-  // NOTE: the #lsViewerBadge element lives at the very end of <body>, after this script block.
-  // At page-load time it does not exist yet, so every access must be null-safe — otherwise
-  // starting sync on load throws and kills the rest of the script (settings handlers, theme).
-  function lsBadge(show) {
-    const el = document.getElementById('lsViewerBadge');
-    if (el) el.style.display = show ? 'block' : 'none';
   }
 
   function lsStop() {
@@ -4866,22 +4900,11 @@
     if (lsCfg.mode === 'off') { lsStatus('Sync off'); return; }
     if (!lsCfg.owner || !lsCfg.repo || !lsCfg.token) { lsStatus('Fill in owner, repo, and token first'); return; }
     if (!lsCfg.branch) lsCfg.branch = 'live';
-    if (lsCfg.mode === 'master') {
-      lsLastHash = '';
-      lsSubsLastAppliedTs = 0;
-      lsFetchSha().then(() => lsPush());
-      lsPollSubs();
-      lsTimer = setInterval(() => { lsPush(); lsPollSubs(); }, LS_INTERVAL);
-      lsStatus('Master: sync running (accepting subs from Viewer)');
-    } else {
-      lsBadge(true);
-      lsLastTs = 0;
-      lsSubsLastPushedFP = null;
-      lsPoll();
-      lsPushSubs();
-      lsTimer = setInterval(() => { lsPoll(); lsPushSubs(); }, LS_INTERVAL);
-      lsStatus('Viewer: polling (subs you make here sync to Master)');
-    }
+    lsLastHash = null; lsLocalChangeAt = 0; lsLastKnownTs = 0; lsSha = null;
+    lsBadge(true);
+    lsTick();
+    lsTimer = setInterval(lsTick, LS_INTERVAL);
+    lsStatus('Sync on — both devices can make changes');
   }
 
   function lsApply() {
@@ -4894,9 +4917,11 @@
     lsStart();
   }
 
+  // Force an immediate push/pull rather than waiting for the next interval.
+  function lsSyncNow() { lsTick(); }
+
   // restore config into the settings fields and resume sync on load
   // ESCAPE HATCH: load the page with #nosync on the end of the URL to force sync off.
-  // Use this if sync ever wedges the app and you can't reach the Settings panel.
   (function lsInit() {
     try {
       if ((location.hash || '').toLowerCase().indexOf('nosync') !== -1) {
@@ -4908,158 +4933,19 @@
       set('lsOwner', lsCfg.owner); set('lsRepo', lsCfg.repo);
       set('lsBranch', lsCfg.branch); set('lsToken', lsCfg.token);
       set('lsMode', lsCfg.mode);
-      // Defer until the whole document is parsed — this script block runs before the end of
-      // <body>, so elements like #lsViewerBadge don't exist yet.
+      // Defer: this script block runs before the end of <body>, so late elements
+      // (#lsViewerBadge) do not exist yet and touching them here would throw.
       if (lsCfg.mode !== 'off') {
         const boot = () => { try { lsStart(); } catch (e) { console.error('lsStart failed', e); } };
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
         else boot();
       }
     } catch (e) {
-      // never let sync setup take the rest of the app down with it
-      console.error('live sync init failed', e);
+      console.error('sync init failed', e);
       try { lsStatus('Sync init error: ' + e.message); } catch (e2) {}
     }
   })();
 
-  // ─── FULL DATA SYNC (GitHub — roster, saved games, settings, not just live state) ───
-  // Reuses lsCfg (owner/repo/token/branch) set up above for Live Sync.
-  const FS_FILE = 'bucketboard-data.json';
-  const FS_KEYS = [
-    'teamName', 'oppName', 'themeColor', 'bucketboard_theme_mode', 'customLogo',
-    'bucketboard_roster', 'bucketboard_clock_defaults', 'bucketboard_games',
-    'bucketboard_rot_presets', 'bucketboard_rotation',
-    'bucketboard_wb_plays', 'bucketboard_wb_default'
-  ];
-  const FS_SEEN_KEY = 'bucketboard_fs_lastSeenRemoteTs'; // newest remote timestamp we've already applied or pushed
-
-  function fsStatus(msg) {
-    const el = document.getElementById('fsStatus');
-    if (el) el.textContent = msg;
-  }
-
-  function fsCollectBundle() {
-    const data = {};
-    FS_KEYS.forEach(k => {
-      const v = localStorage.getItem(k);
-      if (v !== null) data[k] = v;
-    });
-    return { updatedAt: Date.now(), data };
-  }
-
-  function fsApplyBundle(bundle) {
-    Object.keys(bundle.data).forEach(k => localStorage.setItem(k, bundle.data[k]));
-    localStorage.setItem(FS_SEEN_KEY, String(bundle.updatedAt));
-  }
-
-  async function fsFetchRemote() {
-    const ref = '?ref=' + (lsCfg.branch || 'live') + '&t=' + Date.now();
-    // Metadata call: always gives us the sha, even when the file is too big to inline.
-    const meta = await lsApi('/contents/' + FS_FILE + ref);
-    if (meta.status === 404) return { exists: false, sha: null, bundle: null };
-    if (!meta.ok) throw new Error('fetch failed (HTTP ' + meta.status + ')');
-    const json = await meta.json();
-
-    // GitHub returns content:"" with encoding:"none" for files over ~1MB. Decoding that
-    // yields an empty string and JSON.parse then dies with "Unexpected EOF". Fall back to
-    // the raw endpoint, which streams the file regardless of size.
-    let text = '';
-    if (json.content && json.encoding === 'base64') {
-      text = decodeURIComponent(escape(atob(json.content.replace(/\s/g, ''))));
-    } else {
-      const raw = await lsApi('/contents/' + FS_FILE + ref, {
-        headers: { 'Accept': 'application/vnd.github.raw' }
-      });
-      if (!raw.ok) throw new Error('raw fetch failed (HTTP ' + raw.status + ')');
-      text = await raw.text();
-    }
-
-    text = (text || '').trim();
-    if (!text) return { exists: false, sha: json.sha, bundle: null }; // empty file — treat as no data
-    let bundle;
-    try {
-      bundle = JSON.parse(text);
-    } catch (e) {
-      throw new Error('remote data file is corrupt or unreadable — delete ' + FS_FILE + ' in the repo and sync again');
-    }
-    if (!bundle || typeof bundle.updatedAt !== 'number') {
-      throw new Error('remote data file has unexpected format');
-    }
-    return { exists: true, sha: json.sha, bundle };
-  }
-
-  async function fsPushRemote(bundle, sha) {
-    const put = () => lsApi('/contents/' + FS_FILE, {
-      method: 'PUT',
-      body: JSON.stringify({
-        message: 'sync data',
-        content: btoa(unescape(encodeURIComponent(JSON.stringify(bundle)))),
-        branch: lsCfg.branch || 'live',
-        sha: sha || undefined
-      })
-    });
-    let r = await put();
-    if (r.status === 404) { await lsEnsureBranch(); r = await put(); }
-    if (r.status === 409 || r.status === 422) {
-      const fresh = await fsFetchRemote();
-      r = await lsApi('/contents/' + FS_FILE, {
-        method: 'PUT',
-        body: JSON.stringify({
-          message: 'sync data',
-          content: btoa(unescape(encodeURIComponent(JSON.stringify(bundle)))),
-          branch: lsCfg.branch || 'live',
-          sha: fresh.sha || undefined
-        })
-      });
-    }
-    if (!r.ok) {
-      let detail = '';
-      try { detail = ' — ' + ((await r.json()).message || ''); } catch (e) {}
-      if (r.status === 403) detail += ' (token needs Contents: Read and write on this repo)';
-      if (r.status === 401) detail += ' (token invalid or expired)';
-      throw new Error('push failed (HTTP ' + r.status + ')' + detail);
-    }
-  }
-
-  async function fsSyncNow() {
-    if (!lsCfg.owner || !lsCfg.repo || !lsCfg.token) {
-      fsStatus('Fill in owner, repo, and token above (Live Sync section) first, then Apply Sync.');
-      return;
-    }
-    fsStatus('Syncing…');
-    try {
-      const remote = await fsFetchRemote();
-      const lastSeen = Number(localStorage.getItem(FS_SEEN_KEY) || 0);
-      if (remote.exists && remote.bundle.updatedAt > lastSeen) {
-        // someone else pushed newer data since we last synced this device — pull it in
-        fsApplyBundle(remote.bundle);
-        fsStatus('Pulled newer data from GitHub (' + new Date(remote.bundle.updatedAt).toLocaleString() + '). Reloading…');
-        setTimeout(() => location.reload(), 900);
-        return;
-      }
-      // we're the most recent — push local state up
-      const bundle = fsCollectBundle();
-      await fsPushRemote(bundle, remote.sha);
-      localStorage.setItem(FS_SEEN_KEY, String(bundle.updatedAt));
-      fsStatus('Synced — pushed local data ' + new Date(bundle.updatedAt).toLocaleTimeString());
-    } catch (e) {
-      fsStatus('Sync error: ' + e.message);
-    }
-  }
-
-  // On load, silently check (no push) whether newer data is waiting on GitHub, and nudge if so.
-  (async function fsCheckOnLoad() {
-    if (!lsCfg.owner || !lsCfg.repo || !lsCfg.token) return;
-    try {
-      const remote = await fsFetchRemote();
-      const lastSeen = Number(localStorage.getItem(FS_SEEN_KEY) || 0);
-      if (remote.exists && remote.bundle.updatedAt > lastSeen) {
-        fsStatus('Newer data available on GitHub — tap Sync Now to pull it in.');
-      } else {
-        fsStatus('Up to date as of last sync.');
-      }
-    } catch (e) { /* stay quiet on load errors */ }
-  })();
 
   wbRefreshPlayList();
 
