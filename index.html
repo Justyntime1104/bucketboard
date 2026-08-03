@@ -4684,6 +4684,13 @@
   }
 
   function lsApplySnapshot(s) {
+    // SAFETY: never let an empty/rosterless snapshot wipe this device's roster. If the master
+    // is running with no players loaded (e.g. fresh browser, empty storage), ignore its pushes
+    // rather than mirroring the emptiness onto the viewer.
+    if (!s || !Array.isArray(s.players) || s.players.length === 0) {
+      lsStatus('Viewer: ignoring empty snapshot from Master (Master has no roster loaded)');
+      return;
+    }
     // map incoming roster onto local players by number|name; rebuild if lineup differs
     const key = p => p.number + '|' + p.name;
     const local = {};
@@ -4866,12 +4873,25 @@
   }
 
   // restore config into the settings fields and resume sync on load
+  // ESCAPE HATCH: load the page with #nosync on the end of the URL to force sync off.
+  // Use this if sync ever wedges the app and you can't reach the Settings panel.
   (function lsInit() {
-    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
-    set('lsOwner', lsCfg.owner); set('lsRepo', lsCfg.repo);
-    set('lsBranch', lsCfg.branch); set('lsToken', lsCfg.token);
-    set('lsMode', lsCfg.mode);
-    if (lsCfg.mode !== 'off') lsStart();
+    try {
+      if ((location.hash || '').toLowerCase().indexOf('nosync') !== -1) {
+        lsCfg.mode = 'off';
+        try { localStorage.setItem('bucketboard_livesync', JSON.stringify(lsCfg)); } catch (e) {}
+        lsStatus('Sync force-disabled via #nosync');
+      }
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+      set('lsOwner', lsCfg.owner); set('lsRepo', lsCfg.repo);
+      set('lsBranch', lsCfg.branch); set('lsToken', lsCfg.token);
+      set('lsMode', lsCfg.mode);
+      if (lsCfg.mode !== 'off') lsStart();
+    } catch (e) {
+      // never let sync setup take the rest of the app down with it
+      console.error('live sync init failed', e);
+      try { lsStatus('Sync init error: ' + e.message); } catch (e2) {}
+    }
   })();
 
   // ─── FULL DATA SYNC (GitHub — roster, saved games, settings, not just live state) ───
